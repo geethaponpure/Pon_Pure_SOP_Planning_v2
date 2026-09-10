@@ -1,0 +1,8 @@
+fastapi
+dotenv
+pydantic
+pydantic-settings
+pandas
+psycopg2
+pyodbc
+openpyxl
