@@ -1,0 +1,28 @@
+from fastapi import FastAPI
+from .core.database import Base, get_db, engine
+from .models.metadata import crm_sync_table
+from contextlib import asynccontextmanager
+from .core.config import settings
+from sqlalchemy import text
+
+
+
+@asynccontextmanager
+async def lifespan(app:FastAPI):
+
+    print("Application starting.......................")
+
+    async with engine.begin() as conn:
+
+        await conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{settings.DEFAULT_SCHEMA_NAME}"'))
+
+        await conn.run_sync(Base.metadata.create_all)
+
+    yield
+
+    await engine.dispose()
+    print("Application closing.........................")
+    
+
+
+app = FastAPI(lifespan=lifespan)

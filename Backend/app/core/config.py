@@ -21,6 +21,7 @@ class Setting(BaseSettings):
     POSTGRES_DB: str
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
+    POSTGRES_SCHEMA: str
 
     DB_TIMEOUT:int = 120
 
