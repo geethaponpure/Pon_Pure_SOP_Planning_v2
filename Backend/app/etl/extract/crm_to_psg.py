@@ -34,7 +34,7 @@ def get_columns_sql_format(columns):
 
 def get_columns_psg_format(columns):
     """PostgreSQL column format."""
-    return ", ".join(f'"{column}"' for column in columns)
+    return ", ".join(f'"{column.lower()}"' for column in columns)
 
 
 
@@ -71,9 +71,9 @@ def get_table_schema(sql_cursor:pyodbc.Cursor,table_name):
 def ensure_pg_table(pg_cur, table, columns, types, pk):
     """Create the Postgres table add PK, index on the watermark column if incremental."""
 
-    column_with_dtype = ", ".join(f'"{column}" {types[column]}' for column in columns)
+    column_with_dtype = ", ".join(f'"{(column.lower())}" {types[column]}' for column in columns)
 
-    pk_sql = f', PRIMARY KEY ("{pk}")' if pk else ""
+    pk_sql = f', PRIMARY KEY ("{pk.lower()}")' if pk else ""
 
     sql_query = f'CREATE TABLE IF NOT EXISTS "{table}" ({column_with_dtype}{pk_sql})'
 
@@ -167,7 +167,7 @@ def sync_table(table, columns, category):
                 ss_cur.execute(f"SELECT {src_cols} FROM {SRC}.[{table}] {where}", (last_pk_val,))
         else:
             # First run
-            pg_cur.execute(f'TRUNCATE "{table}"')
+            pg_cur.execute(f'TRUNCATE "{table}" CASCADE')
             ss_cur.execute(f"SELECT {src_cols} FROM {SRC}.[{table}]")
 
         # Create temp table
@@ -181,7 +181,7 @@ def sync_table(table, columns, category):
 
         # Update sync progress
         if no_of_rows > 0:
-            pg_cur.execute(f'SELECT MAX("{pk_clm}") FROM stage')
+            pg_cur.execute(f'SELECT MAX("{pk_clm.lower()}") FROM stage')
             new_last_pk = pg_cur.fetchone()[0]  # type: ignore
             save_progress(pg_cur, table,category, new_last_pk, no_of_rows)
         else:

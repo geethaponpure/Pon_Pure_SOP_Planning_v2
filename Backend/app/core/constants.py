@@ -34,19 +34,17 @@ CRM_TABLES = {
 
     # ── Item / product master ─────────────────────────────────────────────
     "item_master": [
-        "itemmasters",                      # SKU master (code, description, uom, enabled_flag)
-        "ItemCategories",                   # segment1..segment4 (Division/Business/Category/Family)
-        "PurchaseRequisitionPtoPts",        # PTO / PTS classification (date-effective)
+        "itemmasters",                      # 
+        "ItemCategories",                   # 
+        "PurchaseRequisitionPtoPts",        # 
     ],
 
     # ── Customer & sales-territory master ─────────────────────────────────
     "customer_master": [
         "CustomerMasters",                  # customer_id / number / name
-        "CustomerSites",                    # site -> mc_code (market circle), primary_flag
-        "CustomerClassificationHeaders",    # customer classification header
-        "CustomerClassificationDetails",    # Class / SubClass / Account_Year
-        "MarketCircles",                    # mc_code, region, collector_id
-        "Collectors",                       # collector id -> name
+        "CustomerSites",                    # Individual customer/business location
+        "MarketCircles",                    # Territory/group/market assigned to a collector
+        "Collectors",                       # Person responsible for customers/collections
     ],
 
     # ── Sales orders / SOC (open order book) ──────────────────────────────
