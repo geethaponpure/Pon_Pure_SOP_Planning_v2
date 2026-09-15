@@ -17,7 +17,7 @@ class Setting(BaseSettings):
 
     #Postgress
     POSTGRES_HOST: str  # hostname or IP - "localhost" is not an IPv4Address
-    POSTGRES_PORT: str
+    POSTGRES_PORT: int
     POSTGRES_DB: str
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
@@ -32,4 +32,4 @@ class Setting(BaseSettings):
     )
 
 
-settings = Setting()
+settings = Setting() # type: ignore

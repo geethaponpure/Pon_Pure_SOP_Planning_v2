@@ -62,4 +62,11 @@ def get_postgres_cursor():
                                 database=settings.POSTGRES_DB,
                                 user=settings.POSTGRES_USER,
                                 password=settings.POSTGRES_PASSWORD)
-    return psg_conn, psg_conn.cursor()
+
+    psg_cur = psg_conn.cursor()
+
+    psg_cur.execute(
+        f'SET search_path TO "{settings.POSTGRES_SCHEMA}"'
+    )
+
+    return psg_conn,psg_cur 

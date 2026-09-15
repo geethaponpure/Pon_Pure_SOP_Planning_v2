@@ -1,0 +1,12 @@
+{
+    // Use the project's uv-managed virtualenv
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+
+    // Pylance: the importable package `app` lives under Backend/, so add it
+    // as a source root. Fixes: Import "app.core.database" could not be resolved
+    "python.analysis.extraPaths": [
+        "Backend"
+    ],
+    "python.analysis.autoSearchPaths": true,
+    "python.analysis.typeCheckingMode": "basic"
+}

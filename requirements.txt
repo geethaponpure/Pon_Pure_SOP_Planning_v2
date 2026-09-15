@@ -10,3 +10,4 @@ openpyxl
 sqlalchemy
 uvicorn
 asyncpg
+psycopg2

@@ -7,6 +7,7 @@ class crm_sync_table(Base):
     __tablename__ = "crm_sync_metadata"
 
     table_name = Column(String,primary_key=True)
+    table_category = Column(String)
     last_pk = Column(BigInteger)
     last_sync_at = Column(DateTime(timezone=True),server_default=func.now())
     rows_synced = Column(BigInteger,default=0)

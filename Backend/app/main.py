@@ -14,7 +14,9 @@ async def lifespan(app:FastAPI):
 
     async with engine.begin() as conn:
 
-        await conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{settings.DEFAULT_SCHEMA_NAME}"'))
+        await conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{settings.POSTGRES_SCHEMA}"'))
+
+        await conn.execute(text(f'SET search_path TO "{settings.POSTGRES_SCHEMA}"'))
 
         await conn.run_sync(Base.metadata.create_all)
 
