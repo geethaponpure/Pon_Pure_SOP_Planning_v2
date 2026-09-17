@@ -57,8 +57,14 @@ CRM_TABLES = {
     ],
 
     # ── Dispatch / billing history ────────────────────────────────────────
-    "dispatch": [
-        "dispatchdetails",                  # dispatched qty per SOC line
+    "dispatch_master": [
+        "DispatchDetails",                  # dispatched qty per SOC line (what shipped)
+        "Dispatches",                       # dispatch note header: invoice no/date, status, cancel flag
+        "Schedules",                        # planned dispatch per SOC line, with reschedules and status
+        "SocCancelDetails",                 # cancelled / closed SOC lines, remaining qty and reason
+        "DeliveryFroms",                    # delivery point lookup for SaleOrderDtls.delivery_from_id
+        # "Billings",                       # invoice lines - add with finance scope
+        # "DespatchDeliveryDates",          # actual delivery date per invoice line - add for OTIF
         # "FnDespatchDetails",              # TVF - dispatch cube (item x customer x collector x MC)
     ],
 

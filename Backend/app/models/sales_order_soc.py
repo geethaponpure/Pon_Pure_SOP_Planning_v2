@@ -54,7 +54,7 @@ class SaleOrderDtls(Base):
     unit_price = Column(Numeric(18, 5), nullable=False)
     discount_percentage = Column(Numeric(18, 2), nullable=False)
     total_sales_price = Column(Numeric(18, 5), nullable=False)
-    delivery_from_id = Column(BigInteger, nullable=False)
+    delivery_from_id = Column(BigInteger, ForeignKey("DeliveryFroms.line_id"), nullable=False, index=True)   # -1 when crm has 0
     sale_category = Column(Text)                                             # Intact / Repack / Bulk
     delivery_date = Column(DateTime)
     inventory_org_id = Column(BigInteger, nullable=False)                    # which warehouse serves it
@@ -66,6 +66,7 @@ class SaleOrderDtls(Base):
 
     order = relationship("SaleOrderHdrs", back_populates="lines")
     item = relationship("ItemMasters")
+    delivery_from = relationship("DeliveryFroms", back_populates="order_lines")
 
 
 

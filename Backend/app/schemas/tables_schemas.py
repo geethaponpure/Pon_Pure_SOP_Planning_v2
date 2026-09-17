@@ -129,7 +129,7 @@ TABLES_COLUMNS = {
         "unit_price",
         "discount_percentage",    # 0 / 5 / 7
         "total_sales_price",      # order value
-        "delivery_from_id",       # delivery point, 43 of them
+        "delivery_from_id",       # -> DeliveryFroms.line_id. 542 lines carry 0 -> -1
         "sale_category",          # Intact / Repack / Bulk
         "delivery_date",          # promised date
         "inventory_org_id",       # which warehouse serves the line
@@ -164,6 +164,110 @@ TABLES_COLUMNS = {
         "Dispatch_PER",           # % dispatched
         "RESCHEDULE_DATE",
         "RESCHEDULE_REASON",      # Customer Requested / Stock Not Available ..
+    ],
+},
+
+#-------------------------------------------- Dispatch / billing history ------------------------
+
+"dispatch_master" : {
+    "DeliveryFroms": [            # delivery point lookup, 46 rows, never edited
+        "line_id",                # pk. SaleOrderDtls.delivery_from_id points here, -1 = unknown
+        "name",                   # Kandla, Vizag, Ennore ..
+        "is_active",              # all true today
+        "location_id",            # CompanyLocations id, not loaded
+        "creation_date",
+        "last_update_date",
+    ],
+
+    "Dispatches": [               # dispatch note / invoice header. snapshot, only the headers the loaded details point at
+        "header_id",              # pk. DispatchDetails.header_id points here
+        "customer_id",            # -> CustomerMasters.customer_id
+        "collector_id",           # -> Collectors
+        "bill_to_customer_site_id",   # -> CustomerSites.site_use_id
+        "ship_to_customer_site_id",   # -> CustomerSites.site_use_id, where it went
+        "sale_order_header_id",   # -> SaleOrderHdrs
+        "despatch_status_id",     # 1 Pending / 3 MoveToOracle / 4 InvoiceCancel
+        "currency",               # INR / USD / EUR
+        "sum_of_despatch_quantity",   # header total qty
+        "inventory_org_id",       # shipping warehouse
+        "trx_number",             # oracle invoice number, empty till invoiced (7%)
+        "trx_date",               # invoice date
+        "sum_of_despatch_value",  # header total value
+        "trans_type_name",        # Taxable / Stock Transfer / Sample ..
+        "oracle_status",          # CANCELLED or empty. second cancel signal
+        "Cancel_reason",          # Credit Issue / Wrong Billing Date / Wrong Tax Calculation
+        "despatch_confirm_date",  # when the branch confirmed it
+        "creation_date",
+        "last_update_date",
+    ],
+
+    "Schedules": [                # planned dispatch per order line. snapshot, performance chemicals from 2021
+        "line_id",                # pk. DispatchDetails.schedule_line_id points here
+        "sale_order_header_id",   # -> SaleOrderHdrs
+        "sale_order_detail_line_id",  # -> SaleOrderDtls, about 1 schedule per line
+        "item_id",                # -> ItemMasters, same as the order line
+        "sale_category",          # Intact / Repack / Bulk
+        "customer_id",            # -> CustomerMasters.customer_id
+        "schedule_date",          # planned dispatch date. stored as date, junk year row -> null
+        "reschedule_date",        # differs from schedule_date on 18% = real reschedules
+        "reschedule_reason",      # Customer Requested / Stock Not Available ..
+        "inventory_org_id",       # planned shipping warehouse
+        "customer_requested_date",    # what the customer asked for
+        "schedule_quantity",
+        "bill_to_customer_site_id",   # -> CustomerSites.site_use_id, 0 -> -1
+        "ship_to_customer_site_id",   # -> CustomerSites.site_use_id, 0 -> -1
+        "schedule_status_id",     # 1 Pending / 3 Reject / 4 Confirmed / 5 Closed / 6 SOCConfirmed / 7 Cancelled. NOT a clean open flag, use SocPendingDetails
+        "confirm_status_id",      # 0 / 1
+        "order_quantity",         # line qty at schedule time
+        "backtoback_enable",      # line that triggers a purchase
+        "unit_price",
+        "creation_date",
+        "last_update_date",       # 42% of rows get edited later
+        "request_type",           # CRM / WMS, empty on old rows
+    ],
+
+    "SocCancelDetails": [         # cancelled / closed soc lines. incremental, rows never change
+        "header_id",              # pk
+        "sale_order_header_id",   # -> SaleOrderHdrs
+        "sale_order_detail_line_id",  # -> SaleOrderDtls, the line being cancelled
+        "schedule_line_id",       # Schedules.line_id, reference only. schedule is often deleted after the cancel
+        "item_id",                # -> ItemMasters
+        "customer_id",            # -> CustomerMasters.customer_id
+        "inventory_org_id",       # warehouse
+        "sale_category",          # Intact / Repack / Bulk ..
+        "schedule_date",          # the schedule that got cancelled
+        "schedule_quantity",      # what was scheduled
+        "shipped_quantity",       # already gone before the cancel
+        "remaining_quantity",     # the cancelled qty
+        "close_reason_id",        # reason code, no master table in crm. ask crm team for the list
+        "status_id",              # workflow status code, no master table in crm
+        "approved_action_date",   # when the cancel was approved
+        "comment",                # free text reason, the only human readable why
+        "creation_date",          # the cancellation date
+    ],
+
+    "DispatchDetails": [          # snapshot table, performance chemicals from 2021 only, reloaded every run
+        "line_id",                # pk
+        "header_id",              # -> Dispatches.header_id, the dispatch note
+        "item_id",                # -> ItemMasters. item actually shipped, not always the ordered one
+        "uom",                    # KG / EA / BOX
+        "sale_quantity",          # dispatched qty, the number we need
+        "unit_price",
+        "schedule_date",          # the dispatch date. stored as date, junk year 9019 row -> null
+        "sale_category",          # Intact / Repack / Bulk / E-Commerce
+        "packing_cost",
+        "inventory_org_id",       # shipping warehouse
+        "sale_order_header_id",   # -> SaleOrderHdrs
+        "sale_order_detail_line_id",  # -> SaleOrderDtls, the main link
+        "schedule_line_id",       # -> Schedules.line_id, the schedule this dispatch fulfils
+        "schedule_quantity",      # what was scheduled
+        "tolerance_quantity",     # always 0 today
+        "trading_manufacture",    # Manufacturing / Trading
+        "tax_percentage",
+        "total_value",            # dispatch value
+        "item_segment",           # always Performance Chemicals after the filter
+        "creation_date",          # empty on pre 2020 rows
+        "last_update_date",       # half the rows get edited later (billing confirmation)
     ],
 },
 }

@@ -135,8 +135,23 @@ def sync_table(table, columns, category):
     pg, pg_cur = get_postgres_cursor()
 
     try:
-        if table in SNAPSHOT_TABLES: #If table exist then we truncate the whole table in postgress
-            pg_cur.execute(f'TRUNCATE "{table}" RESTART IDENTITY')
+        if table in SNAPSHOT_TABLES:
+            # Snapshot table is fully reloaded.
+            # Any child tables are wiped too and their metadata is reset.
+            kids = get_child_tables(pg_cur, table)
+            names = ", ".join(f'"{t}"' for t in sorted([table] + kids))
+
+            pg_cur.execute(f"LOCK TABLE {names} IN ACCESS EXCLUSIVE MODE")
+
+            pg_cur.execute(f'TRUNCATE "{table}" RESTART IDENTITY CASCADE')
+
+            if kids:
+                pg_cur.execute(
+                    "DELETE FROM crm_sync_metadata "
+                    "WHERE table_name = ANY(%s)",
+                    (kids,)
+                )
+
             last_pk_val, pk_clm = None, None
             conditions, params = [], []
 

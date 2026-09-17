@@ -28,6 +28,9 @@ MarketCircles
 Collectors
 ```
 
+<br>
+<br>
+<br>
 
 
 
@@ -59,7 +62,9 @@ The relationships represent:
 * One `ItemMasters` record can have many `PurchaseRequisitionPtoPts` records.
 * `ItemMasters` is the parent table for both tables.
 
-
+<br>
+<br>
+<br>
 
 
 # CRM Sales_Order_SOC Data Model
@@ -116,12 +121,10 @@ SocPendingDetails.itemcode       → ItemMasters.item_code          (soft link, 
 
 
 
-
-
-
-
-
-
+<br>
+<br>
+<br>
+<br>
 
 
 | Level | Table | PK | Filter | Stage fixes | Seed | Children |
