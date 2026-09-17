@@ -45,8 +45,8 @@ class CustomerMasters(Base):
     __tablename__ = "CustomerMasters"
 
     header_id = Column(BigInteger, primary_key=True, autoincrement=False)
-    customer_id = Column(BigInteger, index=True)          # orders and plans use this, empty for leads
-    customer_number = Column(BigInteger, index=True)      # soc pending uses this one
+    customer_id = Column(BigInteger, unique=True)         # orders and plans use this, empty for leads. -1 = unknown
+    customer_number = Column(BigInteger, unique=True)     # soc pending uses this one
     customer_name = Column(Text)
     customergroup = Column(Text)                          # parent company
     status = Column(Text)                                 
@@ -66,7 +66,7 @@ class CustomerSites(Base):
     mc_code = Column(Text, ForeignKey("MarketCircles.mc_code"), index=True)    # etl sets 'unknown' when no match
     cust_acct_site_id = Column(BigInteger, nullable=False, index=True)          # SaleOrderHdrs.CUST_ACCT_SITE_ID
     status = Column(Text)                                                      
-    site_use_id = Column(BigInteger, index=True)          # bill_to_site_id / ship_to_site_id in orders, quotes, plans point here. not unique
+    site_use_id = Column(BigInteger, unique=True)         # bill_to_site_id / ship_to_site_id in orders, quotes, plans point here. -1 = unknown
     site_use_code = Column(Text)                          # BILL_TO / SHIP_TO
     city = Column(Text)
     state = Column(Text)

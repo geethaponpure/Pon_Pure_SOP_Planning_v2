@@ -34,26 +34,26 @@ CRM_TABLES = {
 
     # ── Item / product master ─────────────────────────────────────────────
     "item_master": [
-        "itemmasters",                      # 
-        "ItemCategories",                   # 
-        "PurchaseRequisitionPtoPts",        # 
+        "itemmasters",                      # The main product/item master.
+        "ItemCategories",                   # Assigns a category/segment/classification to an item.
+        "PurchaseRequisitionPtoPts",        # Stores purchase requisition / PTO-PTS related item requirements.
     ],
 
     # ── Customer & sales-territory master ─────────────────────────────────
     "customer_master": [
-        "CustomerMasters",                  # customer_id / number / name
-        "CustomerSites",                    # Individual customer/business location
-        "MarketCircles",                    # Territory/group/market assigned to a collector
+        "CustomerMasters",                  # Stores the main/customer-level information like customer_id / number / name
+        "CustomerSites",                    # Stores the individual locations/sites of customers.
+        "MarketCircles",                    # Defines the market/sales circles assigned to collectors.
         "Collectors",                       # Person responsible for customers/collections
     ],
 
     # ── Sales orders / SOC (open order book) ──────────────────────────────
     "sales_order_soc": [
-        "SaleOrderHdrs",                    # SOC header
-        "SaleOrderdtls",                    # SOC lines (status = 'OPEN')
-        "SocPendingDetails",                # CRM's daily pending-SOC snapshot (Commit Risk)
-        # "FnOrderDtlPending",              # TVF - pending order header
-        # "FnScheduleDtlPending",           # TVF - pending schedule lines (balance qty)
+        "SaleOrderHdrs",                    #Order header/history
+        "SaleOrderdtls",                    #Order line items
+        "SocPendingDetails",                #Current open-order/SOC snapshot
+        # "FnOrderDtlPending",              
+        # "FnScheduleDtlPending",           
     ],
 
     # ── Dispatch / billing history ────────────────────────────────────────
@@ -80,27 +80,27 @@ CRM_TABLES = {
 
     # ── Procurement / purchase ────────────────────────────────────────────
     "purchase": [
-        "BiPoDetails",                      # open PO in-transit (ordered - received - cancelled)
-        "PurchaseRequisitionHdrs",          # requisition header (supplier)
-        "PurchaseRequisitionDtls",          # requisition lines: unit_price vs lastpoprice (RM price)
+        "BiPoDetails",                      
+        "PurchaseRequisitionHdrs",          
+        "PurchaseRequisitionDtls",          
     ],
 
     # ── Inventory / stock ─────────────────────────────────────────────────
     "inventory": [
-        "BiStockDetail",                    # on-hand by org / subinv / lot + aging + item cost
+        "BiStockDetail",                    
     ],
 
     # ── Users, roles & data-scope mappings ────────────────────────────────
     "user_and_scope": [
-        "Users",                            # dbo.Users - CRM user master
-        "UserRoles",                        # user -> role link
-        "Roles",                            # role master (Technical Head, Business Head, ...)
-        "UserMarketCircleMappings",         # Sales Executive -> market circle
-        "UserCustomerMappings",             # Technical Executive -> customer
-        "TechnicalUserSegmentMappings",     # Technical Head/Manager -> segment + collectors
-        "CollectorMailMappings",            # Branch Manager / Regional Manager -> collectors
-        "SpAlertSegmentWorkflowHdrs",       # Division Head -> segment2
-        "SpAlertSegmentWorkflowDtls",       # Business Head -> segment3/4 + collectors
+        "Users",                            
+        "UserRoles",                        
+        "Roles",                            
+        "UserMarketCircleMappings",         
+        "UserCustomerMappings",             
+        "TechnicalUserSegmentMappings",     
+        "CollectorMailMappings",            
+        "SpAlertSegmentWorkflowHdrs",       
+        "SpAlertSegmentWorkflowDtls",       
     ],
 }
 

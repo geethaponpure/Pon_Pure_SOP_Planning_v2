@@ -3,9 +3,7 @@ from sqlalchemy.orm import relationship
 from app.core.database import Base
 
 
-# same rules as customer_master.py: table name as in crm, columns lower case,
-# types from SQL_TO_PG_TYPES, nullable same as crm (stage is built with LIKE).
-#
+
 #   ItemMasters -> ItemCategories        (one category row per item)
 #   ItemMasters -> PurchaseRequisitionPtoPts   (many rows per item, month wise)
 

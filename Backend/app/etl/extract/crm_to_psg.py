@@ -1,29 +1,20 @@
 import csv
 import io
 import pyodbc
+import psycopg2
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from app.core.database import get_postgres_cursor, get_sql_server_cursor
 from app.schemas.tables_schemas import TABLES_COLUMNS
 from app.core.constants import SQL_TO_PG_TYPES, CRM_TABLES
 from app.core.config import settings
-
+from app.etl.extract.utils import (SOURCE_FILTERS, SEED_ROWS, STAGE_FIXES, LOAD_LEVELS,
+                                   SNAPSHOT_TABLES, PARENT_CHECK)
 
 #==================================================================================
 
 SRC = "[CRMPROD].[dbo]"
-CHUNK = 500_000 # rows per COPY batch (bounds memory)
+CHUNK = 50_000 # rows per COPY batch (bounds memory)
 NULL = r"\N" # NULL marker so NULL and '' stay different
-
-
-# Keys for tables with no declared PK (verified unique). Names must match item_master exactly.
-PK_OVERRIDE = {
-"CustomerClassificationHeaders": ["Header_Id"],
-"CustomerClassificationDetails": ["Line_Id"],
-"SocPendingDetails": ["SyncDate"],
-}
-
-#table where unique value only in timestamp column
-TIMESTAMP_TABLES = {"SocPendingDetails": "SyncDate"}
 
 #==================================================================================
 
@@ -38,46 +29,21 @@ def get_columns_psg_format(columns):
 
 
 
-def get_table_schema(sql_cursor:pyodbc.Cursor,table_name):
-    """This function is use to get table schema and its foreign key"""
+def get_table_PK(pg_cursor:psycopg2.extensions.cursor,table_name):
+    """Return the PostgreSQL primary key column name."""
+    pg_cursor.execute("""
+        SELECT a.attname
+        FROM pg_index i
+        JOIN pg_attribute a
+          ON a.attrelid = i.indrelid
+         AND a.attnum = ANY(i.indkey)
+        WHERE i.indrelid = %s::regclass
+          AND i.indisprimary
+        ORDER BY array_position(i.indkey, a.attnum)
+    """, (f'"{table_name}"',))
 
-    #query to get table schema
-    sql_cursor.execute("""
-    SELECT COLUMN_NAME, DATA_TYPE
-    FROM CRMPROD.INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_SCHEMA = 'dbo'
-    AND TABLE_NAME = ?
-    ORDER BY ORDINAL_POSITION
-    """, table_name)
-
-    table_schema = {column: SQL_TO_PG_TYPES.get(data_type, "TEXT") for column, data_type in sql_cursor.fetchall()}
-
-    #query to get foreign key if not we get then we find in PK_OVERRIDE
-    sql_cursor.execute("""
-    SELECT k.COLUMN_NAME
-    FROM CRMPROD.INFORMATION_SCHEMA.TABLE_CONSTRAINTS t
-    JOIN CRMPROD.INFORMATION_SCHEMA.KEY_COLUMN_USAGE k
-    ON k.CONSTRAINT_NAME = t.CONSTRAINT_NAME AND k.TABLE_SCHEMA = t.TABLE_SCHEMA
-    WHERE t.CONSTRAINT_TYPE = 'PRIMARY KEY'
-    AND t.TABLE_SCHEMA = 'dbo' AND t.TABLE_NAME = ?
-    ORDER BY k.ORDINAL_POSITION""", table_name)
-
-    primary_key = PK_OVERRIDE.get(table_name) or [r[0] for r in sql_cursor.fetchall()]
-    return table_schema, primary_key[0]
-
-
-
-
-def ensure_pg_table(pg_cur, table, columns, types, pk):
-    """Create the Postgres table add PK, index on the watermark column if incremental."""
-
-    column_with_dtype = ", ".join(f'"{(column.lower())}" {types[column]}' for column in columns)
-
-    pk_sql = f', PRIMARY KEY ("{pk.lower()}")' if pk else ""
-
-    sql_query = f'CREATE TABLE IF NOT EXISTS "{table}" ({column_with_dtype}{pk_sql})'
-
-    pg_cur.execute(sql_query)
+    row = pg_cursor.fetchone()
+    return row[0] if row else None
 
 
 
@@ -109,12 +75,14 @@ def copy_rows(ss_cur, pg_cur, target, columns):
     return total
 
 
+
 def get_last_pk_value(pg_cur, table_name):
     """Use for get pk or unique value or timestamp(incremental format)"""
 
     pg_cur.execute("SELECT last_pk FROM crm_sync_metadata WHERE table_name = %s", (table_name,))
     row = pg_cur.fetchone()
     return row[0] if row else None
+
 
 
 def save_progress(pg_cur, table,category, last_pk, no_of_rows_sync, status="Done", error_message=None):
@@ -135,67 +103,159 @@ def save_progress(pg_cur, table,category, last_pk, no_of_rows_sync, status="Done
 
 
 
+def get_child_tables(pg_cur, table):
+    """Which tables have foreign keys pointing to this table, directly or indirectly?"""
+    pg_cur.execute("""
+    WITH RECURSIVE kids AS (
+        SELECT c.conrelid AS oid
+        FROM pg_constraint c
+        WHERE c.contype = 'f'
+          AND c.confrelid = %s::regclass
+
+        UNION
+
+        SELECT c.conrelid
+        FROM pg_constraint c
+        JOIN kids k ON c.confrelid = k.oid
+        WHERE c.contype = 'f'
+    )
+    SELECT cl.relname
+    FROM kids
+    JOIN pg_class cl ON cl.oid = kids.oid
+    """, (f'"{table}"',))
+
+    return [r[0] for r in pg_cur.fetchall()]
+
+
+
 def sync_table(table, columns, category):
     """This function is used to fetch data from CRM to PostgreSQL."""
 
-    # Get connections and cursors
     ss, ss_cur = get_sql_server_cursor()
     pg, pg_cur = get_postgres_cursor()
-    time_clm = TIMESTAMP_TABLES.get(table)
 
     try:
-        # Get table schema
-        types, pk_clm = get_table_schema(ss_cur, table)
+        if table in SNAPSHOT_TABLES: #If table exist then we truncate the whole table in postgress
+            pg_cur.execute(f'TRUNCATE "{table}" RESTART IDENTITY')
+            last_pk_val, pk_clm = None, None
+            conditions, params = [], []
 
-        # Ensure table exists in PostgreSQL
-        ensure_pg_table(pg_cur, table, columns, types, pk_clm)
+        else:
+            # Get table PK created by SQLAlchemy models
+            pk_clm = get_table_PK(pg_cur, table)
 
-        # Get last inserted PK value
-        last_pk_val = get_last_pk_value(pg_cur, table)
+            if pk_clm is None:
+                raise RuntimeError(
+                    f"{table}: no primary key in postgres. "
+                    "add it to the model or to SNAPSHOT_TABLES"
+                )
 
-        # SQL Server -> PostgreSQL
+            # Get last inserted PK value from postgress
+            last_pk_val = get_last_pk_value(pg_cur, table)
+
+            conditions, params = [], []
+
+        #Get columns in SQL server format
         src_cols = get_columns_sql_format(columns)
 
-        if last_pk_val is not None:
 
-            # Second run or after that
-            if time_clm:
-                where = f"WHERE [{time_clm}] > CAST(? AS datetime2)"
-                ss_cur.execute(f"SELECT {src_cols} FROM {SRC}.[{table}] {where}", (last_pk_val,))
-            else:
-                where = f"WHERE [{pk_clm}] > ?"
-                ss_cur.execute(f"SELECT {src_cols} FROM {SRC}.[{table}] {where}", (last_pk_val,))
-        else:
-            # First run
-            pg_cur.execute(f'TRUNCATE "{table}" CASCADE')
-            ss_cur.execute(f"SELECT {src_cols} FROM {SRC}.[{table}]")
+        if table not in SNAPSHOT_TABLES:
+            if last_pk_val is not None:
+                conditions.append(f"[{pk_clm}] > ?")
+                params.append(last_pk_val)
 
-        # Create temp table
-        pg_cur.execute(f'CREATE TEMP TABLE stage (LIKE "{table}") ON COMMIT DROP')
+            else: # First run
+                kids = get_child_tables(pg_cur, table) #get names of all the child tables 
 
-        # Copy data to PostgreSQL
+                names = ", ".join(f'"{t}"' for t in sorted([table] + kids))
+                pg_cur.execute(
+                    f"LOCK TABLE {names} IN ACCESS EXCLUSIVE MODE"
+                )
+
+                pg_cur.execute(f'TRUNCATE "{table}" CASCADE')
+
+                if kids:
+                    pg_cur.execute(
+                        "DELETE FROM crm_sync_metadata "
+                        "WHERE table_name = ANY(%s)",
+                        (kids,)
+                    )
+
+        # Apply source-side filter
+        if table in SOURCE_FILTERS:
+            conditions.append(SOURCE_FILTERS[table])
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        ss_cur.execute(
+            f"SELECT {src_cols} FROM {SRC}.[{table}] {where}",
+            params
+        )
+
+        # Temporary staging table
+        pg_cur.execute(
+            f'CREATE TEMP TABLE stage (LIKE "{table}" INCLUDING DEFAULTS) ON COMMIT DROP'
+        )
+
+        # Copy data
         no_of_rows = copy_rows(ss_cur, pg_cur, "stage", columns)
 
-        # Insert data from stage to original table
-        pg_cur.execute(f'INSERT INTO "{table}" ({get_columns_psg_format(columns)}) SELECT {get_columns_psg_format(columns)} FROM stage')
+        if pk_clm:
+            pg_cur.execute(f'SELECT MAX("{pk_clm.lower()}") FROM stage')
+            fetched_max_pk = pg_cur.fetchone()[0]           # type: ignore
+        else:
+            fetched_max_pk = None
+
+        # Hold back rows whose parent was created after the parent level loaded
+        for fk, parent, ppk in PARENT_CHECK.get(table, []):
+            pg_cur.execute(f'SELECT MAX("{ppk}") FROM "{parent}"')
+            parent_max = pg_cur.fetchone()[0]               # type: ignore
+
+            if pk_clm:
+                pg_cur.execute(f'SELECT MIN("{pk_clm}") FROM stage WHERE "{fk}" > %s', (parent_max,))
+                first_new = pg_cur.fetchone()[0]            # type: ignore
+                if first_new is not None:
+                    pg_cur.execute(f'DELETE FROM stage WHERE "{pk_clm}" >= %s', (first_new,))
+                    fetched_max_pk = first_new - 1        # so they're fetched again next run
+            else:
+                pg_cur.execute(f'UPDATE stage SET "{fk}" = NULL WHERE "{fk}" > %s', (parent_max,))
+
+
+        # Fix FK-related values
+        for fix in STAGE_FIXES.get(table, []):
+            pg_cur.execute(fix)
+
+        # Get columns in PSG format
+        cols = get_columns_psg_format(columns)
+
+        #Insert data into PSG table
+        pg_cur.execute(
+            f'INSERT INTO "{table}" ({cols}) '
+            f'SELECT {cols} FROM stage '
+            f'ON CONFLICT DO NOTHING'
+        )
+
+        # Insert catch-all parent row
+        if table in SEED_ROWS:
+            pg_cur.execute(SEED_ROWS[table])
 
         # Update sync progress
-        if no_of_rows > 0:
-            pg_cur.execute(f'SELECT MAX("{pk_clm.lower()}") FROM stage')
-            new_last_pk = pg_cur.fetchone()[0]  # type: ignore
-            save_progress(pg_cur, table,category, new_last_pk, no_of_rows)
+        if table in SNAPSHOT_TABLES:
+            save_progress(pg_cur,table,category,None,no_of_rows)
+        elif no_of_rows > 0:
+            new_last_pk = fetched_max_pk
+            save_progress(pg_cur,table,category,new_last_pk,no_of_rows)
         else:
             new_last_pk = last_pk_val
-            save_progress(pg_cur, table,category, new_last_pk, no_of_rows, "No_New_Data")
+            save_progress(pg_cur,table,category,new_last_pk,no_of_rows,"No_New_Data")
 
-        # Commit transaction
+
         pg.commit()
-
         return no_of_rows
 
     except Exception as e:
         pg.rollback()
-        raise
+        raise 
 
     finally:
         ss.close()
@@ -204,19 +264,19 @@ def sync_table(table, columns, category):
 
 
 def export_table_from_sql_to_psg(workers=4):
-    """Sync every table in item_master in parallel processes (own connections per table)."""
+    """Sync tables level by level; parallel inside each level."""
+    lookup = {table: (category, cols) for category, tables in TABLES_COLUMNS.items() for table, cols in tables.items()}
+
     with ProcessPoolExecutor(max_workers=workers) as pool:
-                jobs = {pool.submit(sync_table, table, cols, category): (category, table)
-                        for category, tables in TABLES_COLUMNS.items()
-                        for table, cols in tables.items()}
-
-
-                for job in as_completed(jobs):
-                    category, table = jobs[job]
-                    try:
-                        print(f"[{category}] {table}: {job.result()} rows")
-                    except Exception as e:
-                        print(f"[{category}] {table}: FAILED -> {e}")
+        for level in LOAD_LEVELS:
+            jobs = {pool.submit(sync_table, table, lookup[table][1], lookup[table][0]): table for table in level if table in lookup}
+            for job in as_completed(jobs):
+                table = jobs[job]
+                category = lookup[table][0]
+                try:
+                    print(f"[{category}] {table}: {job.result()} rows")
+                except Exception as e:
+                    print(f"[{category}] {table}: FAILED -> {e}")
 
 
 

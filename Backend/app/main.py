@@ -3,6 +3,7 @@ from .core.database import Base, get_db, engine
 from .models.metadata import crm_sync_table
 from .models.customer_master import CustomerMasters, CustomerSites, Collectors, MarketCircles
 from .models.items_master import ItemCategories, ItemMasters, PurchaseRequisitionPtoPts
+from .models.sales_order_soc import SaleOrderHdrs, SaleOrderDtls, SocPendingDetails
 from contextlib import asynccontextmanager
 from .core.config import settings
 from sqlalchemy import text
