@@ -5,9 +5,17 @@
 #==================================================================================================
 
 
+#---------------- masters: small, and their rows change (lead -> customer, status, circle). read in full ----------------
+#---------------- every run and merged on the pk. never truncated, everything else points at these -----------------------
+UPSERT_TABLES = {"Collectors", "MarketCircles", "CustomerMasters", "CustomerSites",
+                 "ItemMasters", "ItemCategories", "DeliveryFroms", "QuotationStatus", "JourneyCalendars", "ApSuppliers"}
+
+
 #---------------------------------- no usable key in crm load full data everytime -------------------------------------
-SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules", "DispatchDetails", "QuotationHdrs", "QuotationDtls",
-                   "SCBusinessMonthlyPlanHdrs", "SCBusinessMonthlyPlanDtls", "SCBusinessMonthlyPlanJCDtls"}
+SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules", 
+                   "DispatchDetails", "QuotationHdrs", "QuotationDtls",
+                   "SCBusinessMonthlyPlanHdrs", "SCBusinessMonthlyPlanDtls", "SCBusinessMonthlyPlanJCDtls",
+                   "BiPoDetails", "PurchaseRequisitionHdrs", "PurchaseRequisitionDtls"}
 
 
 
@@ -15,6 +23,8 @@ SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules", "DispatchDeta
 #---------------------------------------------Filter--------------------------------------------------
 SOURCE_FILTERS = {
     "ItemCategories": "[segment1] = 'Performance Chemicals'",
+    # ~68k of 169k
+    "BiPoDetails": "[inventory_item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
     "DispatchDetails": "[schedule_date] >= '2021-01-01' AND [item_segment] = 'Performance Chemicals'",
     # only the headers those details point at, so the fk always holds. ~253k of 1.4M
     "Dispatches": "[header_id] IN (SELECT header_id FROM [CRMPROD].[dbo].[DispatchDetails] WHERE [schedule_date] >= '2021-01-01' AND [item_segment] = 'Performance Chemicals')",
@@ -56,6 +66,7 @@ STAGE_FIXES = {
     "ItemCategories": [
         'DELETE FROM stage WHERE item_id NOT IN (SELECT item_id FROM "ItemMasters")',
     ],
+
     "SCBusinessMonthlyPlanHdrs": [
         # prospects carry customer 0 -> unknown customer, the name sits in new_customer_name
         '''UPDATE stage SET customer_id = -1
@@ -70,6 +81,7 @@ STAGE_FIXES = {
             WHERE new_customer_marketcircle IS NOT NULL AND new_customer_marketcircle <> ''
               AND NOT EXISTS (SELECT 1 FROM "MarketCircles" m WHERE m.mc_code = stage.new_customer_marketcircle)''',
     ],
+
     "SCBusinessMonthlyPlanJCDtls": [
         # 7,888 rows carry jc 0 -> unknown journey cycle
         '''UPDATE stage SET jc_type = -1
@@ -86,6 +98,27 @@ STAGE_FIXES = {
         '''UPDATE stage SET header_id = NULL
             WHERE NOT EXISTS (SELECT 1 FROM "SCBusinessMonthlyPlanHdrs" h WHERE h.header_id = stage.header_id)''',
     ],
+
+    "PurchaseRequisitionDtls": [
+        # 0 means not customer / collector specific, that is a real state -> null
+        '''UPDATE stage SET customerid = NULL
+            WHERE NOT EXISTS (SELECT 1 FROM "CustomerMasters" c WHERE c.customer_id = stage.customerid)''',
+        '''UPDATE stage SET soccollectorid = NULL
+            WHERE NOT EXISTS (SELECT 1 FROM "Collectors" c WHERE c.collector_id = stage.soccollectorid)''',
+        # not sent to oracle yet
+        "UPDATE stage SET po_line_id = NULL WHERE po_line_id = 0",
+        # header not loaded (created between the two snapshots). blank it, next run fixes it
+        '''UPDATE stage SET header_id = NULL
+            WHERE NOT EXISTS (SELECT 1 FROM "PurchaseRequisitionHdrs" h WHERE h.header_id = stage.header_id)''',
+    ],
+    "PurchaseRequisitionHdrs": [
+        # 178 unfinished drafts carry supplier 0 -> null
+        '''UPDATE stage SET supplier_id = NULL
+            WHERE NOT EXISTS (SELECT 1 FROM "ApSuppliers" a WHERE a.vendor_id = stage.supplier_id)''',
+        # 48% carry collector 0 (raised centrally) -> null, that is a real state not a missing parent
+        '''UPDATE stage SET collector_id = NULL
+            WHERE NOT EXISTS (SELECT 1 FROM "Collectors" c WHERE c.collector_id = stage.collector_id)''',
+    ],
     "QuotationHdrs": [
         # crm leaves 0 on a few hundred rows -> unknown customer / site
         '''UPDATE stage SET customer_id = -1
@@ -100,6 +133,7 @@ STAGE_FIXES = {
             WHERE mc_code IS NULL OR mc_code = ''
                OR NOT EXISTS (SELECT 1 FROM "MarketCircles" m WHERE m.mc_code = stage.mc_code)''',
     ],
+    
     "QuotationDtls": [
         # 587 lines carry delivery point 0 -> unknown
         '''UPDATE stage SET delivery_from_id = -1
@@ -208,6 +242,14 @@ PARENT_CHECK = {
                          ("sale_order_header_id",      "SaleOrderHdrs",   "header_id"),
                          ("item_id",                   "ItemMasters",     "item_id"),
                          ("customer_id",               "CustomerMasters", "customer_id")],
+    "BiPoDetails":     [("inventory_item_id", "ItemMasters", "item_id"),
+                        ("vendor_id",         "ApSuppliers", "vendor_id")],
+    "PurchaseRequisitionHdrs": [("collector_id", "Collectors",  "collector_id"),
+                                ("supplier_id",  "ApSuppliers", "vendor_id")],
+    "PurchaseRequisitionDtls": [("header_id",      "PurchaseRequisitionHdrs", "header_id"),
+                                ("item_id",        "ItemMasters",             "item_id"),
+                                ("customerid",     "CustomerMasters",         "customer_id"),
+                                ("soccollectorid", "Collectors",              "collector_id")],
     "Schedules":       [("sale_order_detail_line_id", "SaleOrderDtls",   "line_id"),
                         ("sale_order_header_id",      "SaleOrderHdrs",   "header_id"),
                         ("item_id",                   "ItemMasters",     "item_id"),
@@ -239,9 +281,9 @@ PARENT_CHECK = {
 
 #---------------------------- Parent tables must load before child tables -------------------------------------
 LOAD_LEVELS = [
-    ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms", "QuotationStatus", "JourneyCalendars"],   # no parents
-    ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts"],    # need level 0
-    ["CustomerSites"],                                                   # needs CustomerMasters + MarketCircles
+    ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms", "QuotationStatus", "JourneyCalendars", "ApSuppliers"],   # no parents
+    ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "BiPoDetails", "PurchaseRequisitionHdrs"],   # need level 0
+    ["CustomerSites", "PurchaseRequisitionDtls"],                        # need CustomerMasters + MarketCircles / PurchaseRequisitionHdrs
     ["SaleOrderHdrs", "QuotationHdrs", "SCBusinessMonthlyPlanHdrs"],     # need Collectors, CustomerMasters, CustomerSites (+ MarketCircles, QuotationStatus)
     ["SaleOrderDtls", "SocPendingDetails", "Dispatches", "QuotationDtls", "SCBusinessMonthlyPlanDtls"],   # need the level 3 headers (+ ItemMasters / MarketCircles / sites)
     ["Schedules", "SocCancelDetails", "SCBusinessMonthlyPlanJCDtls"],    # level 5, need SaleOrderDtls / SCBusinessMonthlyPlanDtls

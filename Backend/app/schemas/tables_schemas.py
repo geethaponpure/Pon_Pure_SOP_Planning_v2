@@ -3,6 +3,7 @@
 TABLES_COLUMNS = {
 
 #-------------------------------------------- Item / product master -------------------------------------------    
+
 "item_master" : {
     "ItemMasters": [
         "item_id",              # pk. orders, quotes, dispatch, categories, pto/pts all link on this
@@ -330,6 +331,7 @@ TABLES_COLUMNS = {
 
 
 #-------------------------------------------- Business plan / projection (S&OP demand) --------------------------------------------
+
 "business_plan" : {
     "JourneyCalendars": [         # planning calendar, 13 cycles a year, ~4 weeks each. incremental, never edited
         "line_id",                # pk. SCBusinessMonthlyPlanJCDtls.jc_type points here, -1 = unknown
@@ -499,6 +501,120 @@ TABLES_COLUMNS = {
         "creation_date",
         "last_update_date",       # 3% edited after creation
     ],
-}
+},
+
+
+#-------------------------------------------- Procurement / purchase --------------------------------------------
+
+"purchase_master" : {
+    "ApSuppliers": [              # oracle vendor master, 24k rows, only ~3k ever used. upsert, level 0
+        "vendor_id",              # pk. BiPoDetails.vendor_id and PurchaseRequisitionHdrs.supplier_id point here
+        "vendor_name",
+        "segment1",               # oracle vendor number, = BiPoDetails.vendor_number
+        "vendor_type_lookup_code",    # SUPPLIER / EMPLOYEE / TRANSPORTER / CONTRACTOR .. the filter for real suppliers
+        "pay_group_lookup_code",  # SUPPLIER / TRANSPORTER / EMPLOYEE, empty on 86%
+        "terms_id",               # payment terms id, oracle stores it as float
+        "start_date_active",
+        "end_date_active",        # set on 23% = inactive vendor
+        "attribute8",             # msme registered YES / NO
+        "attribute9",             # msme class Micro / Small / Medium
+        "attribute10",            # msme type Manufacturing / Services / Trading
+        "attribute11",            # udyam registration number
+        "creation_date",
+        "last_update_date",
+    ],
+
+    "BiPoDetails": [              # oracle po extract, regenerated nightly. snapshot with our own id, performance chemicals only
+        "sync_date",              # when crm read oracle
+        "po_header_id",           # oracle po header
+        "po_number",
+        "po_line_id",             # oracle po line. PurchaseRequisitionDtls.po_line_id points here. 402 dups, soft link
+        "line_num",
+        "po_date",
+        "company_id",             # operating unit
+        "company_code",           # PPC / PSM / POI ..
+        "vendor_id",              # -> ApSuppliers.vendor_id, 100% match
+        "vendor_name",
+        "vendor_site_id",
+        "ship_to_location_id",
+        "inv_org_id",             # receiving warehouse
+        "procurement_type",       # Domestic / Market / Import Procurement / Packing Materials. the reliable classifier
+        "purchase_category",      # Market-Packed / Domestic-Bulk .. '0' on 37% (old pos)
+        "inventory_item_id",      # -> ItemMasters.item_id, 100% match
+        "uom",                    # Kilogram / Each / Litre
+        "unit_price",
+        "quantity",               # ordered
+        "quantity_received",
+        "quantity_cancelled",
+        "quantity_billed",
+        "line_amount",            # pending = greatest(quantity - received - cancelled, 0). 8% are over-received, that is real
+    ],
+
+    "PurchaseRequisitionHdrs": [   # requisitions raised in crm, ~4.5k a year, all PC. snapshot, status moves after creation
+        "header_id",              # pk. PurchaseRequisitionDtls.header_id points here
+        "operating_unit",
+        "Requester",              # planner name, 34 of them
+        "Collector_id",           # -> Collectors. 0 on 48% (raised centrally) -> null
+        "supplier_id",            # -> ApSuppliers.vendor_id. 0 on 178 unfinished drafts -> null
+        "supplier_site_id",
+        "type",                   # Domestic / Import
+        "purchase_category",      # Domestic Procurement / Import Procurement DFF / Market Procurement ..
+        "category",               # division e.g. Textile & Paper Division
+        "business",               # e.g. Textile / Water Treatment / Paints & Coatings
+        "business_division",      # Capital / Service / Speciality
+        "currency",               # INR / USD / EURO
+        "conversion_type",        # misnamed in crm, it is the conversion rate. 0 on domestic rows
+        "payment_term_id",
+        "payment_term",           # Immediate / 60 days ..
+        "DeliveryTermId",         # CFR / CIF / FOB on imports, else empty
+        "ship_to_inv_org_id",     # receiving warehouse
+        "bill_to_inv_org_id",
+        "status_id",              # 0 .. 7, no master in crm. 6 = approved (91%), 7 = rejected, 0 = draft. status text column is always empty
+        "record_submit",          # Y / N / R
+        "IsConfirmed",
+        "creation_date",
+        "last_update_date",
+    ],
+
+    "PurchaseRequisitionDtls": [   # one row per item requested, with the stock / price context crm captured. snapshot
+        "line_id",                # pk
+        "header_id",              # -> PurchaseRequisitionHdrs
+        "item_id",                # -> ItemMasters, 100% match, 99.8% PC
+        "item_description",
+        "UOM",                    # KG / L / EA
+        "quantity",
+        "unit_price",
+        "total_price",            # = quantity x unit_price
+        "category_id",            # item category at request time, differs from today's on 16%. keep, it is history
+        "needby_date",
+        "priority",               # Low / Medium / High, 90% empty
+        "pto_pts",                # PTO / PTS
+        "import_export",          # Import / Export, empty on domestic
+        "PurchaseType",           # Regular / Lab Trial / Pilot Project, 85% empty
+        "CustomerId",             # -> CustomerMasters.customer_id. only on customer specific requests, 0 on 78% -> null
+        "SOCCollectorId",         # -> Collectors. same, 0 on 78% -> null
+        "onhand_stock",           # context at request time
+        "eta_stock",
+        "pendingreqqty",
+        "avgsales",
+        "stock_days",             # 359 rows absurd (crm divide by zero), treat > 3650 as no sales
+        "lastpoprice",
+        "change_in_price_per",    # 100 when there was no last po
+        "PendingOrderCount",
+        "itemstatus",             # A / I at request time
+        "QtyInKgs",               # 2026 feature, 4% populated today
+        "UnitpricePerKg",
+        "Totalvalue",
+        "GPPercentage",
+        "status_id",              # -2 .. 8, no master. 6 = approved (90%), 7 = rejected, negatives = referred back
+        "record_submit",          # Y / R, empty on 84%
+        "po_header_id",           # oracle po raised for this line
+        "po_number",
+        "po_line_id",             # BiPoDetails.po_line_id, soft link. empty till sent to oracle (11%)
+        "PoSenddate",             # when it went to oracle
+        "creation_date",
+        "last_update_date",       # 64% empty
+    ],
+},
 
 }

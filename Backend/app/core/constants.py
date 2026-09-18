@@ -36,7 +36,7 @@ CRM_TABLES = {
     "item_master": [
         "itemmasters",                      # The main product/item master.
         "ItemCategories",                   # Assigns a category/segment/classification to an item.
-        "PurchaseRequisitionPtoPts",        # Stores purchase requisition / PTO-PTS related item requirements.
+        "PurchaseRequisitionPtoPts",        # monthly PTO / PTS classification per item (purchase-to-order vs to-stock), from sales concentration. not a requisition
     ],
 
 # ────────────────────────────── Customer & sales-territory master ─────────────────────────────────
@@ -45,6 +45,10 @@ CRM_TABLES = {
         "CustomerSites",                    # Stores the individual locations/sites of customers.
         "MarketCircles",                    # Defines the market/sales circles assigned to collectors.
         "Collectors",                       # Person responsible for customers/collections
+        # "CustomerClassificationHeaders", 
+        # "CustomerClassificationDetails", 
+        # "Companies", 
+        # "PaymentTerms"
     ],
 
 # ────────────────────────────── Sales orders / SOC (open order book) ──────────────────────────────
@@ -63,6 +67,7 @@ CRM_TABLES = {
         "Schedules",                        # planned dispatch per SOC line, with reschedules and status
         "SocCancelDetails",                 # cancelled / closed SOC lines, remaining qty and reason
         "DeliveryFroms",                    # delivery point lookup for SaleOrderDtls.delivery_from_id
+        #"Reasons"
         # "Billings",                       # invoice lines - add with finance scope
         # "DespatchDeliveryDates",          # actual delivery date per invoice line - add for OTIF
         # "FnDespatchDetails",              # TVF - dispatch cube (item x customer x collector x MC)
@@ -85,15 +90,17 @@ CRM_TABLES = {
     ],
 
 # ────────────────────────────── Procurement / purchase ────────────────────────────────────────────
-    "purchase": [
+    "purchase_master": [
         "BiPoDetails",                      
         "PurchaseRequisitionHdrs",          
-        "PurchaseRequisitionDtls",          
+        "PurchaseRequisitionDtls",
+        "ApSuppliers"                       #Who are the companies/people/organizations that Pon Pure can purchase from or has registered as a vendor?
     ],
 
 # ────────────────────────────── Inventory / stock ─────────────────────────────────────────────────
-    "inventory": [
-        "BiStockDetail",                    
+    "inventory_master": [
+        "BiStockDetail",
+        "InventoryOrgLocations"                    
     ],
 
 # ────────────────────────────── Users, roles & data-scope mappings ────────────────────────────────
@@ -101,7 +108,8 @@ CRM_TABLES = {
         "Users",                            
         "UserRoles",                        
         "Roles",                            
-        "UserMarketCircleMappings",         
+        "UserMarketCircleMappings",
+        "UserCollectorMappings"         
         "UserCustomerMappings",             
         "TechnicalUserSegmentMappings",     
         "CollectorMailMappings",            

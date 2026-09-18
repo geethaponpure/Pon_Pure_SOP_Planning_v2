@@ -8,7 +8,7 @@ from app.schemas.tables_schemas import TABLES_COLUMNS
 from app.core.constants import SQL_TO_PG_TYPES, CRM_TABLES
 from app.core.config import settings
 from app.etl.extract.utils import (SOURCE_FILTERS, SEED_ROWS, STAGE_FIXES, LOAD_LEVELS,
-                                   SNAPSHOT_TABLES, PARENT_CHECK)
+                                   SNAPSHOT_TABLES, UPSERT_TABLES, PARENT_CHECK)
 
 #==================================================================================
 
@@ -155,6 +155,17 @@ def sync_table(table, columns, category):
             last_pk_val, pk_clm = None, None
             conditions, params = [], []
 
+        elif table in UPSERT_TABLES:
+            # Master table: read in full every run and merge on the pk.
+            # No truncate (children point here), no watermark.
+            pk_clm = get_table_PK(pg_cur, table)
+
+            if pk_clm is None:
+                raise RuntimeError(f"{table}: no primary key in postgres. add it to the model")
+
+            last_pk_val = None
+            conditions, params = [], []
+
         else:
             # Get table PK created by SQLAlchemy models
             pk_clm = get_table_PK(pg_cur, table)
@@ -162,7 +173,7 @@ def sync_table(table, columns, category):
             if pk_clm is None:
                 raise RuntimeError(
                     f"{table}: no primary key in postgres. "
-                    "add it to the model or to SNAPSHOT_TABLES"
+                    "add it to the model or to SNAPSHOT_TABLES / UPSERT_TABLES"
                 )
 
             # Get last inserted PK value from postgress
@@ -174,7 +185,7 @@ def sync_table(table, columns, category):
         src_cols = get_columns_sql_format(columns)
 
 
-        if table not in SNAPSHOT_TABLES:
+        if table not in SNAPSHOT_TABLES and table not in UPSERT_TABLES:
             if last_pk_val is not None:
                 conditions.append(f"[{pk_clm}] > ?")
                 params.append(last_pk_val)
@@ -244,18 +255,28 @@ def sync_table(table, columns, category):
         cols = get_columns_psg_format(columns)
 
         #Insert data into PSG table
-        pg_cur.execute(
-            f'INSERT INTO "{table}" ({cols}) '
-            f'SELECT {cols} FROM stage '
-            f'ON CONFLICT DO NOTHING'
-        )
+        if table in UPSERT_TABLES:
+            # merge: new rows inserted, existing rows updated column by column
+            non_pk = [c for c in columns if c.lower() != pk_clm.lower()]            #type: ignore
+            set_clause = ", ".join(f'"{c.lower()}" = EXCLUDED."{c.lower()}"' for c in non_pk)
+            pg_cur.execute(
+                f'INSERT INTO "{table}" ({cols}) '
+                f'SELECT {cols} FROM stage '
+                f'ON CONFLICT ("{pk_clm.lower()}") DO UPDATE SET {set_clause}'      #type: ignore
+            )
+        else:
+            pg_cur.execute(
+                f'INSERT INTO "{table}" ({cols}) '
+                f'SELECT {cols} FROM stage '
+                f'ON CONFLICT DO NOTHING'
+            )
 
         # Insert catch-all parent row
         if table in SEED_ROWS:
             pg_cur.execute(SEED_ROWS[table])
 
         # Update sync progress
-        if table in SNAPSHOT_TABLES:
+        if table in SNAPSHOT_TABLES or table in UPSERT_TABLES:
             save_progress(pg_cur,table,category,None,no_of_rows)
         elif no_of_rows > 0:
             new_last_pk = fetched_max_pk

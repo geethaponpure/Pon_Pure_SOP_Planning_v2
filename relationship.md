@@ -351,6 +351,83 @@ Things to know:
 
 
 
+<br>
+<br>
+<br>
+
+
+# CRM Purchase_Master Data Model
+
+
+The CRM Purchase data model consists of four main tables:
+
+- ApSuppliers
+- PurchaseRequisitionHdrs
+- PurchaseRequisitionDtls
+- BiPoDetails
+
+The logical business relationship is:
+
+```text
+  ┌───────────────────────────┐
+  │       ApSuppliers         │   oracle vendor master, 24k rows, ~3k ever used
+  │       pk: vendor_id       │   (the rest are employees, transporters, tax authorities)
+  └──────▲─────────────▲──────┘
+         │ supplier_id │ vendor_id
+         │ (N : 1)     │ (N : 1)
+  ┌──────┴────────────┐│
+  │PurchaseRequisition││        what was ASKED for (crm)
+  │Hdrs  pk: header_id││
+  └──────▲────────────┘│
+         │ header_id   │
+         │ (N : 1)     │
+  ┌──────┴────────────┐│       ┌───────────────────────────┐
+  │PurchaseRequisition│┆       │       BiPoDetails         │  what oracle actually ORDERED
+  │Dtls  pk: line_id  │┆       │       pk: id (ours)       │  nightly extract, every approved po line since 2018
+  └───────────────────┘┆       └─────────────▲─────────────┘
+         ┆ po_line_id  ┆                     │
+         ┆ soft link   ┆─────────────────────┘
+         ┆ (po_line_id is not unique in BiPoDetails, 402 dups)
+         ▼
+  BiPoDetails.po_line_id
+
+  ───►  enforced foreign key        ┄┄►  soft link, joinable but not enforced
+  both PurchaseRequisitionDtls and BiPoDetails also point at ItemMasters (item_id / inventory_item_id)
+```
+
+The relationships represent:
+
+* One `PurchaseRequisitionHdrs` (who / from whom / where to) has ~2 `PurchaseRequisitionDtls` lines (item, qty, price, and the stock / price context crm captured at that moment).
+* A requisition line, once approved, becomes an oracle po line: `PurchaseRequisitionDtls.po_line_id` → `BiPoDetails.po_line_id` on 89% of lines (the rest are drafts / rejected). Soft link, because `po_line_id` is not unique in the extract and `BiPoDetails` is regenerated every night.
+* `BiPoDetails` is the open-purchase source: `quantity - quantity_received - quantity_cancelled` is what is still in transit (36k lines).
+* `ApSuppliers` is the vendor master for both: `BiPoDetails.vendor_id` (100%) and `PurchaseRequisitionHdrs.supplier_id` (all but 178 drafts).
+* `ApSuppliers` is upsert (rows change - msme status, holds). The three others are snapshot: `BiPoDetails` because its `header_id` restarts from 1 every night (we use our own `id`), the requisition tables because status and the po link move after creation.
+
+Links to the master tables:
+
+```text
+BiPoDetails.inventory_item_id            → ItemMasters.item_id           (100%)
+BiPoDetails.vendor_id                    → ApSuppliers.vendor_id         (100%)
+PurchaseRequisitionHdrs.supplier_id      → ApSuppliers.vendor_id         (null on 178 drafts, crm has 0)
+PurchaseRequisitionHdrs.collector_id     → Collectors.collector_id       (null on 48%: raised centrally, crm has 0)
+PurchaseRequisitionDtls.item_id          → ItemMasters.item_id           (100%)
+PurchaseRequisitionDtls.customerid       → CustomerMasters.customer_id   (null on 78%: not customer specific)
+PurchaseRequisitionDtls.soccollectorid   → Collectors.collector_id       (null on 78%)
+```
+
+Things to know:
+
+* Filters: `BiPoDetails` is cut to performance chemicals items (68k of 169k). Requisitions need no filter - every one is PC.
+* `BiPoDetails.header_id` is not loaded: crm reassigns it from 1 on every nightly regeneration. `po_line_id` is the stable oracle id.
+* `BiPoDetails.purchase_category` is `'0'` on 37% (older pos, before the field existed). `procurement_type` is the reliable classifier.
+* 8% of po lines are over-received (`received + cancelled > quantity`) - tolerance receipts, real. Pending qty = `greatest(quantity - received - cancelled, 0)`.
+* `PurchaseRequisitionHdrs.conversion_type` is misnamed: it is the conversion rate (0 on domestic rows). `status` (text) is always empty, `status_id` has no master: 6 = approved (91%), 7 = rejected, 0 = draft.
+* `PurchaseRequisitionDtls.stock_days` is absurd on 359 rows (crm divide by zero): treat `> 3650` as no sales. `category_id` is the item's category at request time and differs from today's on 16% - it is history, keep it.
+* `ApSuppliers` msme data lives in oracle dff columns: `attribute8` registered, `attribute9` class, `attribute10` type, `attribute11` udyam number. `terms_id` is a float in oracle.
+* Zeros in `collector_id` / `customerid` / `soccollectorid` / `supplier_id` mean "not applicable", not "unknown" - loaded as null, no `-1` rows.
+
+
+
 
 
 
@@ -367,16 +444,20 @@ Things to know:
 
 | Level | Table | PK | Mode | Filter | Stage fixes | Seed | Children |
 |---:|---|---|---|---|---|---|---|
-| 0 | Collectors | `collector_id` | incremental | – | – | – | MarketCircles, CustomerSites, SaleOrderHdrs, SaleOrderDtls, SocPendingDetails, Dispatches, Schedules, SocCancelDetails, DispatchDetails |
-| 0 | CustomerMasters | `header_id` | incremental | – | `0` → NULL on customer_id, customer_number | `unknown` (-1) | CustomerSites, SaleOrderHdrs, SaleOrderDtls, SocPendingDetails, Dispatches, Schedules, SocCancelDetails, DispatchDetails |
-| 0 | ItemMasters | `item_id` | incremental | – | – | – | ItemCategories, PurchaseRequisitionPtoPts, SaleOrderDtls, Schedules, SocCancelDetails, DispatchDetails |
-| 0 | DeliveryFroms | `line_id` | incremental | – | – | `unknown` (-1) | SaleOrderDtls, QuotationDtls |
-| 0 | QuotationStatus | `line_id` | incremental | – | – | – | QuotationHdrs, QuotationDtls |
-| 0 | JourneyCalendars | `line_id` | incremental | – | – | `unknown` (-1) | SCBusinessMonthlyPlanJCDtls |
-| 1 | MarketCircles | `header_id` | incremental | – | lower/trim | `unknown` (-1) | CustomerSites, SaleOrderHdrs, … |
-| 1 | ItemCategories | `header_id` | incremental | PC only | drop orphans | – | – |
+| 0 | Collectors | `collector_id` | upsert | – | – | – | MarketCircles, CustomerSites, SaleOrderHdrs, SaleOrderDtls, SocPendingDetails, Dispatches, Schedules, SocCancelDetails, DispatchDetails |
+| 0 | CustomerMasters | `header_id` | upsert | – | `0` → NULL on customer_id, customer_number | `unknown` (-1) | CustomerSites, SaleOrderHdrs, SaleOrderDtls, SocPendingDetails, Dispatches, Schedules, SocCancelDetails, DispatchDetails |
+| 0 | ItemMasters | `item_id` | upsert | – | – | – | ItemCategories, PurchaseRequisitionPtoPts, SaleOrderDtls, Schedules, SocCancelDetails, DispatchDetails |
+| 0 | DeliveryFroms | `line_id` | upsert | – | – | `unknown` (-1) | SaleOrderDtls, QuotationDtls |
+| 0 | QuotationStatus | `line_id` | upsert | – | – | – | QuotationHdrs, QuotationDtls |
+| 0 | JourneyCalendars | `line_id` | upsert | – | – | `unknown` (-1) | SCBusinessMonthlyPlanJCDtls |
+| 0 | ApSuppliers | `vendor_id` | upsert | – | – | – | BiPoDetails, PurchaseRequisitionHdrs |
+| 1 | MarketCircles | `header_id` | upsert | – | lower/trim | `unknown` (-1) | CustomerSites, SaleOrderHdrs, … |
+| 1 | ItemCategories | `header_id` | upsert | PC only | drop orphans | – | – |
 | 1 | PurchaseRequisitionPtoPts | `Header_id → header_id` | incremental | – | – | – | – |
-| 2 | CustomerSites | `line_id` | incremental | – | lower/trim + `unknown`, drop duplicate site_use_id | `unknown` (-1) | SaleOrderHdrs, Dispatches, Schedules, … |
+| 1 | BiPoDetails | `id` (ours) | snapshot | PC item | – | – | – |
+| 1 | PurchaseRequisitionHdrs | `header_id` | snapshot | – | collector `0` → NULL, supplier `0` → NULL | – | PurchaseRequisitionDtls |
+| 2 | CustomerSites | `line_id` | upsert | – | lower/trim + `unknown`, drop duplicate site_use_id | `unknown` (-1) | SaleOrderHdrs, Dispatches, Schedules, … |
+| 2 | PurchaseRequisitionDtls | `line_id` | snapshot | – | customer / collector `0` → NULL, po_line_id `0` → NULL, blank header_id if not loaded | – | – |
 | 3 | SaleOrderHdrs | `header_id` | incremental | – | missing site → `-1` on bill_to / ship_to | – | SaleOrderDtls, SocPendingDetails, Dispatches, Schedules, SocCancelDetails, DispatchDetails |
 | 3 | QuotationHdrs | `header_id` | snapshot | headers the loaded QuotationDtls point at | customer / sites `0` → `-1`, mc_code lower/trim + `unknown` | – | QuotationDtls |
 | 3 | SCBusinessMonthlyPlanHdrs | `header_id` | snapshot | – | customer `0` → `-1`, wrong site → `-1` (NULL kept), new_customer_marketcircle lower/trim + `unknown` | – | SCBusinessMonthlyPlanDtls, SCBusinessMonthlyPlanJCDtls |
@@ -390,7 +471,7 @@ Things to know:
 | 5 | SCBusinessMonthlyPlanJCDtls | `line_id` | snapshot | – | jc_type `0` → `-1`, blank header_id (= Dtls.line_id) if not loaded | – | – |
 | 6 | DispatchDetails | `line_id` | snapshot | schedule_date ≥ 2021 and item_segment = PC | junk date → NULL, blank header_id / schedule_line_id if parent not loaded | – | – |
 
-Snapshot = wiped and reloaded in full every run (rows change after creation in crm). Incremental = `pk > last loaded pk`, rows never change.
+Snapshot = wiped and reloaded in full every run (rows change after creation in crm). Incremental = `pk > last loaded pk`, rows never change. Upsert = masters: read in full every run and merged on the pk, never truncated (children point at them), so a lead that becomes a customer or a site that moves circle is picked up.
 Parents load before children (levels). If a child arrives before its parent (crm moved on during the run), incremental tables hold the row back until the next run; snapshot tables blank the fk and the next full reload fixes it.
 
 
