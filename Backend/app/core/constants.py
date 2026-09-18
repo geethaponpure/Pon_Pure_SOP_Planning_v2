@@ -32,14 +32,14 @@ SQL_TO_PG_TYPES = {
 
 CRM_TABLES = {
 
-    # ── Item / product master ─────────────────────────────────────────────
+# ────────────────────────────── Item / product master ─────────────────────────────────────────────
     "item_master": [
         "itemmasters",                      # The main product/item master.
         "ItemCategories",                   # Assigns a category/segment/classification to an item.
         "PurchaseRequisitionPtoPts",        # Stores purchase requisition / PTO-PTS related item requirements.
     ],
 
-    # ── Customer & sales-territory master ─────────────────────────────────
+# ────────────────────────────── Customer & sales-territory master ─────────────────────────────────
     "customer_master": [
         "CustomerMasters",                  # Stores the main/customer-level information like customer_id / number / name
         "CustomerSites",                    # Stores the individual locations/sites of customers.
@@ -47,7 +47,7 @@ CRM_TABLES = {
         "Collectors",                       # Person responsible for customers/collections
     ],
 
-    # ── Sales orders / SOC (open order book) ──────────────────────────────
+# ────────────────────────────── Sales orders / SOC (open order book) ──────────────────────────────
     "sales_order_soc": [
         "SaleOrderHdrs",                    #Order header/history
         "SaleOrderdtls",                    #Order line items
@@ -56,7 +56,7 @@ CRM_TABLES = {
         # "FnScheduleDtlPending",           
     ],
 
-    # ── Dispatch / billing history ────────────────────────────────────────
+# ────────────────────────────── Dispatch / billing history ────────────────────────────────────────
     "dispatch_master": [
         "DispatchDetails",                  # dispatched qty per SOC line (what shipped)
         "Dispatches",                       # dispatch note header: invoice no/date, status, cancel flag
@@ -68,35 +68,35 @@ CRM_TABLES = {
         # "FnDespatchDetails",              # TVF - dispatch cube (item x customer x collector x MC)
     ],
 
-    # ── Quotation / pipeline ──────────────────────────────────────────────
-    "quotation": [
+# ────────────────────────────── Quotation / pipeline ──────────────────────────────────────────────
+    "quotation_master": [
         "QuotationHdrs",                    # quote header (status_id, customer, collector)
         "QuotationDtls",                    # quote lines (qty, value)
         "QuotationStatus",                  # status master (open vs won/lost)
         # "FnQuotationDetails",             # TVF - quote details (legacy adapter path)
     ],
 
-    # ── Business plan / projection (S&OP demand) ──────────────────────────
+# ────────────────────────────── Business plan / projection (S&OP demand) ──────────────────────────
     "business_plan": [
         "SCBusinessMonthlyPlanHdrs",        # plan header + annual potential/budget + JC status
-        "SCBusinessMonthlyPlanDtls",        # per-JC week1/week2 user-defined qty
-        "SCBusinessMonthlyPlanJCDtls",      # next-month-1 / next-month-2 JC qty
-        "JourneyCalendars",                 # JC master (name, effective_from/to, active/closed)
+        "SCBusinessMonthlyPlanDtls",        # 13-JC detailed plan, per-JC week1/week2 user-defined qty
+        "SCBusinessMonthlyPlanJCDtls",      # Next-month forecast for this JC, next-month-1 / next-month-2 JC qty
+        "JourneyCalendars",                 # What JC is this?, JC master (name, effective_from/to, active/closed)
     ],
 
-    # ── Procurement / purchase ────────────────────────────────────────────
+# ────────────────────────────── Procurement / purchase ────────────────────────────────────────────
     "purchase": [
         "BiPoDetails",                      
         "PurchaseRequisitionHdrs",          
         "PurchaseRequisitionDtls",          
     ],
 
-    # ── Inventory / stock ─────────────────────────────────────────────────
+# ────────────────────────────── Inventory / stock ─────────────────────────────────────────────────
     "inventory": [
         "BiStockDetail",                    
     ],
 
-    # ── Users, roles & data-scope mappings ────────────────────────────────
+# ────────────────────────────── Users, roles & data-scope mappings ────────────────────────────────
     "user_and_scope": [
         "Users",                            
         "UserRoles",                        

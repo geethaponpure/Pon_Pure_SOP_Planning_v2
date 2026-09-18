@@ -95,6 +95,7 @@ TABLES_COLUMNS = {
     ],
 },
 
+
 #-------------------------------------------- Sales orders / SOC (open order book) ------------------------
 
 "sales_order_soc" : {
@@ -166,6 +167,7 @@ TABLES_COLUMNS = {
         "RESCHEDULE_REASON",      # Customer Requested / Stock Not Available ..
     ],
 },
+
 
 #-------------------------------------------- Dispatch / billing history ------------------------
 
@@ -270,4 +272,233 @@ TABLES_COLUMNS = {
         "last_update_date",       # half the rows get edited later (billing confirmation)
     ],
 },
+
+
+#-------------------------------------------- Quotation / pipeline ------------------------
+
+"quotation_master" : {
+    "QuotationStatus": [          # 21 row lookup, incremental
+        "line_id",                # pk. status_id on hdrs and dtls points here
+        "name",                   # Open / Approved / Confirmed / Closed ..
+        "description",
+        "is_active",              # all true today
+    ],
+
+    "QuotationHdrs": [            # snapshot. only the headers the loaded lines point at, reloaded every run
+        "header_id",              # pk. every SaleOrderHdrs.quotation_line_id points here, soft link (orders are not filtered to PC)
+        "quotation_number",       # PPC/2025-26/103315
+        "quotation_date",
+        "company_id",             # operating unit, same ids as organization_id on orders
+        "collector_id",           # -> Collectors
+        "customer_id",            # -> CustomerMasters.customer_id. 153 rows carry 0 -> -1
+        "bill_to_site_id",        # -> CustomerSites.site_use_id. 300 zeros -> -1
+        "ship_to_site_id",        # -> CustomerSites.site_use_id. 716 zeros -> -1
+        "status_id",              # -> QuotationStatus. 96% Closed (closes on conversion). Open / Approved / Confirmed = pipeline
+        "close_status_id",        # 0 / 1 / 2, no master table
+        "trans_type_name",        # Taxable / Stock Transfer / Sample / Export ..
+        "is_back_to_back_order",  # quote that triggers a purchase
+        "quote_creation_type",    # 1 / 2
+        "currency_type",          # INR / USD / EUR
+        "conversion_rate",        # to INR
+        "mc_code",                # -> MarketCircles.mc_code. lower case, 2% blank -> 'unknown'
+        "is_prequote",            # 152 true
+        "revised_count",          # how many times the quote was revised
+        "creation_date",
+        "last_update_date",       # 7% of rows edited later (status moves), hence snapshot
+    ],
+
+    "QuotationDtls": [            # snapshot. performance chemicals lines from 2021, reloaded every run
+        "line_id",                # pk. SaleOrderDtls.quotationdtl_line_id points here, 90% match, soft link
+        "header_id",              # -> QuotationHdrs
+        "item_id",                # -> ItemMasters
+        "uom_code",               # KG / EA / BOX
+        "quantity",               # quoted qty
+        "unit_price",
+        "total_sales_price",      # quoted value
+        "discount_percentage",    # 0 / 5 / 10
+        "discount_value",
+        "tax_percentage",
+        "delivery_from_id",       # -> DeliveryFroms. 587 zeros -> -1
+        "sale_category",          # Intact / Repack / Bulk
+        "inventory_org_id",       # warehouse
+        "delivery_date",          # 1 junk row -> null
+        "status_id",              # -> QuotationStatus. 536 rows carry 0 -> null
+        "creation_date",
+        "last_update_date",       # 7% edited later
+    ],
+},
+
+
+#-------------------------------------------- Business plan / projection (S&OP demand) --------------------------------------------
+"business_plan" : {
+    "JourneyCalendars": [         # planning calendar, 13 cycles a year, ~4 weeks each. incremental, never edited
+        "line_id",                # pk. SCBusinessMonthlyPlanJCDtls.jc_type points here, -1 = unknown
+        "name",                   # JC1 .. JC13
+        "acc_year",               # 2025-2026
+        "effective_from",         # first day of the cycle
+        "effective_to",           # last day, next cycle starts the day after. no gaps, no overlaps
+        "is_active",              # all true today
+        "is_closed",              # false or empty today
+        "creation_date",
+        "last_update_date",
+    ],
+
+    "SCBusinessMonthlyPlanHdrs": [    # annual plan per customer x product x collector x year. snapshot, no filter (whole table is PC)
+        "header_id",              # pk. SCBusinessMonthlyPlanDtls.header_id points here
+        "acc_year",               # 2025-2026, the reliable time key
+        "customer_id",            # -> CustomerMasters.customer_id. 9,624 prospects carry 0 -> -1
+        "collector_id",           # -> Collectors
+        "bill_to_site_id",        # -> CustomerSites.site_use_id. empty on 53%, crm stopped filling it from 2024-25
+        "item_description",       # product name. no item_id on the plan, maps to one sku only 29% of the time
+        "category_id",            # ItemCategories.category_id, not unique there so no fk
+        "segment2",               # division
+        "segment3",               # category
+        "segment4",               # family
+        "annual_potential_qty",
+        "annual_potential_value",
+        "annual_budget_qty",
+        "annual_budget_value",
+        "prev_two_yr_qty_achieved",
+        "prev_two_yr_value_achieved",
+        "last_yr_avg_sell_price",
+        "avg_sell_price",
+        "jc1_status",     # jc workflow status 1 .. 6, no master in crm. 1 and 4 cover 96%
+        "jc2_status",
+        "jc3_status",
+        "jc4_status",
+        "jc5_status",
+        "jc6_status",
+        "jc7_status",
+        "jc8_status",
+        "jc9_status",
+        "jc10_status",
+        "jc11_status",
+        "jc12_status",
+        "jc13_status",
+        "new_customer_name",      # prospects only
+        "new_customer_marketcircle",  # prospects only. lower/trim, 'unknown' when blank or not a circle
+        "is_new_customer",        # true exactly when customer_id was 0
+        "is_key_customer",
+        "is_new_item",
+        "creation_date",          # empty on 43%, all of 2020-22
+        "last_update_date",       # half the rows move after creation
+    ],
+
+    "SCBusinessMonthlyPlanDtls": [    # the 13 JC plan, wide. snapshot. a third of rows are exact dups, 86% have no plan - load all, clean in views
+        "line_id",                # pk. SCBusinessMonthlyPlanJCDtls.header_id points here (misnamed in crm)
+        "header_id",              # -> SCBusinessMonthlyPlanHdrs
+        "customer_id",            # -> CustomerMasters.customer_id. 0 on 38% -> -1, prefer the header's customer
+        "collector_id",           # -> Collectors
+        "item_description",       # same as the header on 99.8%
+        "category_id",
+        "jc1_week1_user_dfn_qty",      # planned qty, first half of the cycle
+        "jc1_week1_user_dfn_value",    # user typed, mixed units (rupees / lakhs). use qty x avg price instead
+        "jc1_week2_user_dfn_qty",      # planned qty, second half
+        "jc1_week2_user_dfn_value",    # same caveat
+        "jc1_qty_achieved",            # sparse, actuals come from dispatch
+        "jc1_user_dfn_avg_sell_price", # planned price
+        "is_jc1_saved",                # plan entered for this cycle
+        "jc2_week1_user_dfn_qty",
+        "jc2_week1_user_dfn_value",
+        "jc2_week2_user_dfn_qty",
+        "jc2_week2_user_dfn_value",
+        "jc2_qty_achieved",
+        "jc2_user_dfn_avg_sell_price",
+        "is_jc2_saved",
+        "jc3_week1_user_dfn_qty",
+        "jc3_week1_user_dfn_value",
+        "jc3_week2_user_dfn_qty",
+        "jc3_week2_user_dfn_value",
+        "jc3_qty_achieved",
+        "jc3_user_dfn_avg_sell_price",
+        "is_jc3_saved",
+        "jc4_week1_user_dfn_qty",
+        "jc4_week1_user_dfn_value",
+        "jc4_week2_user_dfn_qty",
+        "jc4_week2_user_dfn_value",
+        "jc4_qty_achieved",
+        "jc4_user_dfn_avg_sell_price",
+        "is_jc4_saved",
+        "jc5_week1_user_dfn_qty",
+        "jc5_week1_user_dfn_value",
+        "jc5_week2_user_dfn_qty",
+        "jc5_week2_user_dfn_value",
+        "jc5_qty_achieved",
+        "jc5_user_dfn_avg_sell_price",
+        "is_jc5_saved",
+        "jc6_week1_user_dfn_qty",
+        "jc6_week1_user_dfn_value",
+        "jc6_week2_user_dfn_qty",
+        "jc6_week2_user_dfn_value",
+        "jc6_qty_achieved",
+        "jc6_user_dfn_avg_sell_price",
+        "is_jc6_saved",
+        "jc7_week1_user_dfn_qty",
+        "jc7_week1_user_dfn_value",
+        "jc7_week2_user_dfn_qty",
+        "jc7_week2_user_dfn_value",
+        "jc7_qty_achieved",
+        "jc7_user_dfn_avg_sell_price",
+        "is_jc7_saved",
+        "jc8_week1_user_dfn_qty",
+        "jc8_week1_user_dfn_value",
+        "jc8_week2_user_dfn_qty",
+        "jc8_week2_user_dfn_value",
+        "jc8_qty_achieved",
+        "jc8_user_dfn_avg_sell_price",
+        "is_jc8_saved",
+        "jc9_week1_user_dfn_qty",
+        "jc9_week1_user_dfn_value",
+        "jc9_week2_user_dfn_qty",
+        "jc9_week2_user_dfn_value",
+        "jc9_qty_achieved",
+        "jc9_user_dfn_avg_sell_price",
+        "is_jc9_saved",
+        "jc10_week1_user_dfn_qty",
+        "jc10_week1_user_dfn_value",
+        "jc10_week2_user_dfn_qty",
+        "jc10_week2_user_dfn_value",
+        "jc10_qty_achieved",
+        "jc10_user_dfn_avg_sell_price",
+        "is_jc10_saved",
+        "jc11_week1_user_dfn_qty",
+        "jc11_week1_user_dfn_value",
+        "jc11_week2_user_dfn_qty",
+        "jc11_week2_user_dfn_value",
+        "jc11_qty_achieved",
+        "jc11_user_dfn_avg_sell_price",
+        "is_jc11_saved",
+        "jc12_week1_user_dfn_qty",
+        "jc12_week1_user_dfn_value",
+        "jc12_week2_user_dfn_qty",
+        "jc12_week2_user_dfn_value",
+        "jc12_qty_achieved",
+        "jc12_user_dfn_avg_sell_price",
+        "is_jc12_saved",
+        "jc13_week1_user_dfn_qty",
+        "jc13_week1_user_dfn_value",
+        "jc13_week2_user_dfn_qty",
+        "jc13_week2_user_dfn_value",
+        "jc13_qty_achieved",
+        "jc13_user_dfn_avg_sell_price",
+        "is_jc13_saved",
+        "is_new_customer",
+        "is_key_customer",
+        "is_new_item",
+        "creation_date",
+        "last_update_date",       # 13% edited after creation
+    ],
+
+    "SCBusinessMonthlyPlanJCDtls": [  # rolling forecast per plan line x journey cycle. snapshot. 87% of rows are all zero, filter in views
+        "line_id",                # pk
+        "header_id",              # -> SCBusinessMonthlyPlanDtls.line_id. misnamed in crm, it is the plan LINE not the header. 2,744 point at deleted lines -> null
+        "acc_year",               # 2025-2026. disagrees with the jc's year on 123 rows
+        "jc_type",                # -> JourneyCalendars.line_id. 7,888 rows carry 0 -> -1
+        "jc_nextmonth1_qty",      # forecast qty, next month
+        "jc_nextmonth2_qty",      # forecast qty, month after
+        "creation_date",
+        "last_update_date",       # 3% edited after creation
+    ],
+}
+
 }

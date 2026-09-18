@@ -6,7 +6,8 @@
 
 
 #---------------------------------- no usable key in crm load full data everytime -------------------------------------
-SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules", "DispatchDetails"}
+SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules", "DispatchDetails", "QuotationHdrs", "QuotationDtls",
+                   "SCBusinessMonthlyPlanHdrs", "SCBusinessMonthlyPlanDtls", "SCBusinessMonthlyPlanJCDtls"}
 
 
 
@@ -21,6 +22,10 @@ SOURCE_FILTERS = {
     "Schedules": "[schedule_date] >= '2021-01-01' AND [item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
     # ~17k of 126k
     "SocCancelDetails": "[creation_date] >= '2021-01-01' AND [item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
+    # ~380k of 2.65M
+    "QuotationDtls": "[creation_date] >= '2021-01-01' AND [item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
+    # only the headers those lines point at, so the fk always holds. ~225k of 1.19M
+    "QuotationHdrs": "[header_id] IN (SELECT header_id FROM [CRMPROD].[dbo].[QuotationDtls] WHERE [creation_date] >= '2021-01-01' AND [item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals'))",
 }
 
 
@@ -50,6 +55,63 @@ STAGE_FIXES = {
 
     "ItemCategories": [
         'DELETE FROM stage WHERE item_id NOT IN (SELECT item_id FROM "ItemMasters")',
+    ],
+    "SCBusinessMonthlyPlanHdrs": [
+        # prospects carry customer 0 -> unknown customer, the name sits in new_customer_name
+        '''UPDATE stage SET customer_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "CustomerMasters" c WHERE c.customer_id = stage.customer_id)''',
+        # site is optional here (empty on half the rows), only a wrong value goes to unknown
+        '''UPDATE stage SET bill_to_site_id = -1
+            WHERE bill_to_site_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM "CustomerSites" s WHERE s.site_use_id = stage.bill_to_site_id)''',
+        # soft link, same spelling rule as mc_code everywhere else
+        "UPDATE stage SET new_customer_marketcircle = lower(trim(new_customer_marketcircle))",
+        '''UPDATE stage SET new_customer_marketcircle = 'unknown'
+            WHERE new_customer_marketcircle IS NOT NULL AND new_customer_marketcircle <> ''
+              AND NOT EXISTS (SELECT 1 FROM "MarketCircles" m WHERE m.mc_code = stage.new_customer_marketcircle)''',
+    ],
+    "SCBusinessMonthlyPlanJCDtls": [
+        # 7,888 rows carry jc 0 -> unknown journey cycle
+        '''UPDATE stage SET jc_type = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "JourneyCalendars" c WHERE c.line_id = stage.jc_type)''',
+        # header_id is the plan line. 2,744 point at lines crm has deleted, plus the snapshot race. blank them
+        '''UPDATE stage SET header_id = NULL
+            WHERE NOT EXISTS (SELECT 1 FROM "SCBusinessMonthlyPlanDtls" d WHERE d.line_id = stage.header_id)''',
+    ],
+    "SCBusinessMonthlyPlanDtls": [
+        # 0 on 38% of rows (prospects and their duplicates) -> unknown customer
+        '''UPDATE stage SET customer_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "CustomerMasters" c WHERE c.customer_id = stage.customer_id)''',
+        # header not loaded (created between the two snapshots). blank it, next run fixes it
+        '''UPDATE stage SET header_id = NULL
+            WHERE NOT EXISTS (SELECT 1 FROM "SCBusinessMonthlyPlanHdrs" h WHERE h.header_id = stage.header_id)''',
+    ],
+    "QuotationHdrs": [
+        # crm leaves 0 on a few hundred rows -> unknown customer / site
+        '''UPDATE stage SET customer_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "CustomerMasters" c WHERE c.customer_id = stage.customer_id)''',
+        '''UPDATE stage SET ship_to_site_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "CustomerSites" s WHERE s.site_use_id = stage.ship_to_site_id)''',
+        '''UPDATE stage SET bill_to_site_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "CustomerSites" s WHERE s.site_use_id = stage.bill_to_site_id)''',
+        # same rule as CustomerSites, 2% blank
+        'UPDATE stage SET mc_code = lower(trim(mc_code))',
+        '''UPDATE stage SET mc_code = 'unknown'
+            WHERE mc_code IS NULL OR mc_code = ''
+               OR NOT EXISTS (SELECT 1 FROM "MarketCircles" m WHERE m.mc_code = stage.mc_code)''',
+    ],
+    "QuotationDtls": [
+        # 587 lines carry delivery point 0 -> unknown
+        '''UPDATE stage SET delivery_from_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "DeliveryFroms" f WHERE f.line_id = stage.delivery_from_id)''',
+        # 536 lines carry status 0, not a status
+        '''UPDATE stage SET status_id = NULL
+            WHERE NOT EXISTS (SELECT 1 FROM "QuotationStatus" s WHERE s.line_id = stage.status_id)''',
+        # one junk date
+        "UPDATE stage SET delivery_date = NULL WHERE delivery_date < '2015-01-01' OR delivery_date > '2027-12-31'",
+        # header not loaded (created between the two snapshots). blank it, next run fixes it
+        '''UPDATE stage SET header_id = NULL
+            WHERE NOT EXISTS (SELECT 1 FROM "QuotationHdrs" h WHERE h.header_id = stage.header_id)''',
     ],
 
     "SaleOrderHdrs": [
@@ -85,6 +147,7 @@ STAGE_FIXES = {
         '''UPDATE stage SET bill_to_customer_site_id = -1
             WHERE NOT EXISTS (SELECT 1 FROM "CustomerSites" s WHERE s.site_use_id = stage.bill_to_customer_site_id)''',
     ],
+
     "DispatchDetails": [
         # one row sits in year 9019, would break any date axis
         "UPDATE stage SET schedule_date = NULL WHERE schedule_date > '2027-12-31'",
@@ -99,6 +162,9 @@ STAGE_FIXES = {
 
 #------------------------------------- Catch-all parent rows -------------------------------------
 SEED_ROWS = {
+    "JourneyCalendars": '''INSERT INTO "JourneyCalendars" (line_id, name, acc_year, effective_from, effective_to, is_active, is_closed)
+                          VALUES (-1, 'unknown', 'unknown', '1900-01-01', '1900-01-01', false, false)
+                          ON CONFLICT (line_id) DO NOTHING''',
     "DeliveryFroms":   '''INSERT INTO "DeliveryFroms" (line_id, name, is_active, location_id)
                           VALUES (-1, 'unknown', false, -1)
                           ON CONFLICT (line_id) DO NOTHING''',
@@ -148,6 +214,23 @@ PARENT_CHECK = {
                         ("customer_id",               "CustomerMasters", "customer_id"),
                         ("ship_to_customer_site_id",  "CustomerSites",   "site_use_id"),
                         ("bill_to_customer_site_id",  "CustomerSites",   "site_use_id")],
+
+#-------------------------------------------- quotation_master -----------------------------------------------------
+    "SCBusinessMonthlyPlanHdrs": [("customer_id",     "CustomerMasters", "customer_id"),
+                                  ("collector_id",    "Collectors",      "collector_id"),
+                                  ("bill_to_site_id", "CustomerSites",   "site_use_id")],
+    "SCBusinessMonthlyPlanJCDtls": [("header_id", "SCBusinessMonthlyPlanDtls", "line_id"),
+                                    ("jc_type",   "JourneyCalendars",          "line_id")],
+    "SCBusinessMonthlyPlanDtls": [("header_id",    "SCBusinessMonthlyPlanHdrs", "header_id"),
+                                  ("customer_id",  "CustomerMasters",           "customer_id"),
+                                  ("collector_id", "Collectors",                "collector_id")],
+    "QuotationHdrs":   [("collector_id",    "Collectors",      "collector_id"),
+                        ("customer_id",     "CustomerMasters", "customer_id"),
+                        ("ship_to_site_id", "CustomerSites",   "site_use_id"),
+                        ("bill_to_site_id", "CustomerSites",   "site_use_id")],
+    "QuotationDtls":   [("header_id",        "QuotationHdrs", "header_id"),
+                        ("item_id",          "ItemMasters",   "item_id"),
+                        ("delivery_from_id", "DeliveryFroms", "line_id")],
     "DispatchDetails": [("sale_order_detail_line_id", "SaleOrderDtls", "line_id"),
                         ("sale_order_header_id",      "SaleOrderHdrs", "header_id"),
                         ("item_id",                   "ItemMasters",   "item_id")],
@@ -156,11 +239,11 @@ PARENT_CHECK = {
 
 #---------------------------- Parent tables must load before child tables -------------------------------------
 LOAD_LEVELS = [
-    ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms"],   # no parents
+    ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms", "QuotationStatus", "JourneyCalendars"],   # no parents
     ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts"],    # need level 0
     ["CustomerSites"],                                                   # needs CustomerMasters + MarketCircles
-    ["SaleOrderHdrs"],                                                   # needs Collectors, CustomerMasters, CustomerSites
-    ["SaleOrderDtls", "SocPendingDetails", "Dispatches"],                # need SaleOrderHdrs (+ ItemMasters / MarketCircles / sites)
-    ["Schedules", "SocCancelDetails"],                                   # level 5, need SaleOrderDtls
+    ["SaleOrderHdrs", "QuotationHdrs", "SCBusinessMonthlyPlanHdrs"],     # need Collectors, CustomerMasters, CustomerSites (+ MarketCircles, QuotationStatus)
+    ["SaleOrderDtls", "SocPendingDetails", "Dispatches", "QuotationDtls", "SCBusinessMonthlyPlanDtls"],   # need the level 3 headers (+ ItemMasters / MarketCircles / sites)
+    ["Schedules", "SocCancelDetails", "SCBusinessMonthlyPlanJCDtls"],    # level 5, need SaleOrderDtls / SCBusinessMonthlyPlanDtls
     ["DispatchDetails"],                                                 # level 6, needs Schedules + Dispatches
 ]

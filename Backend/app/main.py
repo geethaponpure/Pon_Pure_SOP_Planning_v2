@@ -4,7 +4,9 @@ from .models.metadata import crm_sync_table
 from .models.customer_master import CustomerMasters, CustomerSites, Collectors, MarketCircles
 from .models.items_master import ItemCategories, ItemMasters, PurchaseRequisitionPtoPts
 from .models.sales_order_soc import SaleOrderHdrs, SaleOrderDtls, SocPendingDetails
-from .models.dispatch import DeliveryFroms, Dispatches, DispatchDetails, Schedules, SocCancelDetails
+from .models.dispatch_master import DeliveryFroms, Dispatches, DispatchDetails, Schedules, SocCancelDetails
+from .models.quotation_master import QuotationStatus, QuotationHdrs, QuotationDtls
+from .models.business_plan import JourneyCalendars, SCBusinessMonthlyPlanHdrs, SCBusinessMonthlyPlanDtls, SCBusinessMonthlyPlanJCDtls
 from contextlib import asynccontextmanager
 from .core.config import settings
 from sqlalchemy import text
