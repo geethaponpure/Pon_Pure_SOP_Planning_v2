@@ -2,13 +2,14 @@ import csv
 import io
 import pyodbc
 import psycopg2
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from app.core.database import get_postgres_cursor, get_sql_server_cursor
 from app.schemas.tables_schemas import TABLES_COLUMNS
 from app.core.constants import SQL_TO_PG_TYPES, CRM_TABLES
 from app.core.config import settings
 from app.etl.extract.utils import (SOURCE_FILTERS, SEED_ROWS, STAGE_FIXES, LOAD_LEVELS,
-                                   SNAPSHOT_TABLES, UPSERT_TABLES, PARENT_CHECK)
+                                   SNAPSHOT_TABLES, UPSERT_TABLES, PARENT_CHECK,
+                                   LARGE_TABLES, RANGE_ROWS, INNER_WORKERS)
 
 #==================================================================================
 
@@ -128,6 +129,68 @@ def get_child_tables(pg_cur, table):
 
 
 
+def load_stage(pg_cur, ss_cur, table, columns, pk_clm, upsert=False):
+    """The open CRM result set -> temp stage -> parent check -> stage fixes -> insert.
+    Shared by sync_table (whole table) and sync_range (one pk range of a large table).
+    Returns (rows copied, max pk seen, first pk held back because its parent is missing)."""
+
+    # Temporary staging table. TEMP is private to this session, so parallel range workers
+    # can all call theirs 'stage' without seeing each other.
+    pg_cur.execute(
+        f'CREATE TEMP TABLE stage (LIKE "{table}" INCLUDING DEFAULTS) ON COMMIT DROP'
+    )
+
+    # Copy data
+    no_of_rows = copy_rows(ss_cur, pg_cur, "stage", columns)
+
+    fetched_max_pk, held_from = None, None
+    if pk_clm:
+        pg_cur.execute(f'SELECT MAX("{pk_clm.lower()}") FROM stage')
+        fetched_max_pk = pg_cur.fetchone()[0]           # type: ignore
+
+    # Hold back rows whose parent was created after the parent level loaded
+    for fk, parent, ppk in PARENT_CHECK.get(table, []):
+        pg_cur.execute(f'SELECT MAX("{ppk}") FROM "{parent}"')
+        parent_max = pg_cur.fetchone()[0]               # type: ignore
+
+        if pk_clm:
+            pg_cur.execute(f'SELECT MIN("{pk_clm}") FROM stage WHERE "{fk}" > %s', (parent_max,))
+            first_new = pg_cur.fetchone()[0]            # type: ignore
+            if first_new is not None:
+                pg_cur.execute(f'DELETE FROM stage WHERE "{pk_clm}" >= %s', (first_new,))
+                held_from = first_new if held_from is None else min(held_from, first_new)
+                fetched_max_pk = held_from - 1          # so they're fetched again next run
+        else:
+            pg_cur.execute(f'UPDATE stage SET "{fk}" = NULL WHERE "{fk}" > %s', (parent_max,))
+
+    # Fix FK-related values
+    for fix in STAGE_FIXES.get(table, []):
+        pg_cur.execute(fix)
+
+    # Get columns in PSG format
+    cols = get_columns_psg_format(columns)
+
+    #Insert data into PSG table
+    if upsert:
+        # merge: new rows inserted, existing rows updated column by column
+        non_pk = [c for c in columns if c.lower() != pk_clm.lower()]            #type: ignore
+        set_clause = ", ".join(f'"{c.lower()}" = EXCLUDED."{c.lower()}"' for c in non_pk)
+        pg_cur.execute(
+            f'INSERT INTO "{table}" ({cols}) '
+            f'SELECT {cols} FROM stage '
+            f'ON CONFLICT ("{pk_clm.lower()}") DO UPDATE SET {set_clause}'      #type: ignore
+        )
+    else:
+        pg_cur.execute(
+            f'INSERT INTO "{table}" ({cols}) '
+            f'SELECT {cols} FROM stage '
+            f'ON CONFLICT DO NOTHING'
+        )
+
+    return no_of_rows, fetched_max_pk, held_from
+
+
+
 def sync_table(table, columns, category):
     """This function is used to fetch data from CRM to PostgreSQL."""
 
@@ -218,58 +281,10 @@ def sync_table(table, columns, category):
             params
         )
 
-        # Temporary staging table
-        pg_cur.execute(
-            f'CREATE TEMP TABLE stage (LIKE "{table}" INCLUDING DEFAULTS) ON COMMIT DROP'
+        # stage -> parent check -> fixes -> insert (shared with the range workers)
+        no_of_rows, fetched_max_pk, _ = load_stage(
+            pg_cur, ss_cur, table, columns, pk_clm, upsert=table in UPSERT_TABLES
         )
-
-        # Copy data
-        no_of_rows = copy_rows(ss_cur, pg_cur, "stage", columns)
-
-        if pk_clm:
-            pg_cur.execute(f'SELECT MAX("{pk_clm.lower()}") FROM stage')
-            fetched_max_pk = pg_cur.fetchone()[0]           # type: ignore
-        else:
-            fetched_max_pk = None
-
-        # Hold back rows whose parent was created after the parent level loaded
-        for fk, parent, ppk in PARENT_CHECK.get(table, []):
-            pg_cur.execute(f'SELECT MAX("{ppk}") FROM "{parent}"')
-            parent_max = pg_cur.fetchone()[0]               # type: ignore
-
-            if pk_clm:
-                pg_cur.execute(f'SELECT MIN("{pk_clm}") FROM stage WHERE "{fk}" > %s', (parent_max,))
-                first_new = pg_cur.fetchone()[0]            # type: ignore
-                if first_new is not None:
-                    pg_cur.execute(f'DELETE FROM stage WHERE "{pk_clm}" >= %s', (first_new,))
-                    fetched_max_pk = first_new - 1        # so they're fetched again next run
-            else:
-                pg_cur.execute(f'UPDATE stage SET "{fk}" = NULL WHERE "{fk}" > %s', (parent_max,))
-
-
-        # Fix FK-related values
-        for fix in STAGE_FIXES.get(table, []):
-            pg_cur.execute(fix)
-
-        # Get columns in PSG format
-        cols = get_columns_psg_format(columns)
-
-        #Insert data into PSG table
-        if table in UPSERT_TABLES:
-            # merge: new rows inserted, existing rows updated column by column
-            non_pk = [c for c in columns if c.lower() != pk_clm.lower()]            #type: ignore
-            set_clause = ", ".join(f'"{c.lower()}" = EXCLUDED."{c.lower()}"' for c in non_pk)
-            pg_cur.execute(
-                f'INSERT INTO "{table}" ({cols}) '
-                f'SELECT {cols} FROM stage '
-                f'ON CONFLICT ("{pk_clm.lower()}") DO UPDATE SET {set_clause}'      #type: ignore
-            )
-        else:
-            pg_cur.execute(
-                f'INSERT INTO "{table}" ({cols}) '
-                f'SELECT {cols} FROM stage '
-                f'ON CONFLICT DO NOTHING'
-            )
 
         # Insert catch-all parent row
         if table in SEED_ROWS:
@@ -299,13 +314,143 @@ def sync_table(table, columns, category):
 
 
 
+def sync_range(table, columns, pk_clm, lo, hi):
+    """One pk range (lo, hi] of a large table. Own connections, own transaction, one commit.
+    Returns (lo, hi, rows, held_from)."""
+
+    ss, ss_cur = get_sql_server_cursor()
+    pg, pg_cur = get_postgres_cursor()
+
+    try:
+        conditions = [f"[{pk_clm}] > ?", f"[{pk_clm}] <= ?"]
+        if table in SOURCE_FILTERS:
+            conditions.append(SOURCE_FILTERS[table])
+
+        ss_cur.execute(
+            f"SELECT {get_columns_sql_format(columns)} FROM {SRC}.[{table}] "
+            f"WHERE {' AND '.join(conditions)}",
+            (lo, hi)
+        )
+
+        rows, _, held_from = load_stage(pg_cur, ss_cur, table, columns, pk_clm)
+        pg.commit()
+        return lo, hi, rows, held_from
+
+    except Exception:
+        pg.rollback()
+        raise
+
+    finally:
+        ss.close()
+        pg.close()
+
+
+
+def sync_large_table(table, columns, category):
+    """Incremental table read in parallel pk ranges (LARGE_TABLES).
+    Same level rules as sync_table; inside, INNER_WORKERS processes each take a range.
+    The watermark only advances over contiguous good ranges: a failed range is re-fetched
+    next run and rows loaded above it are absorbed by ON CONFLICT DO NOTHING."""
+
+    ss, ss_cur = get_sql_server_cursor()
+    pg, pg_cur = get_postgres_cursor()
+
+    try:
+        pk_clm = get_table_PK(pg_cur, table)
+        if pk_clm is None:
+            raise RuntimeError(f"{table}: no primary key in postgres. add it to the model")
+
+        last_pk_val = get_last_pk_value(pg_cur, table)
+
+        if last_pk_val is None:
+            # First run: same reset as sync_table, committed before any worker starts
+            kids = get_child_tables(pg_cur, table)
+            names = ", ".join(f'"{t}"' for t in sorted([table] + kids))
+            pg_cur.execute(f"LOCK TABLE {names} IN ACCESS EXCLUSIVE MODE")
+            pg_cur.execute(f'TRUNCATE "{table}" CASCADE')
+            if kids:
+                pg_cur.execute("DELETE FROM crm_sync_metadata WHERE table_name = ANY(%s)", (kids,))
+            pg.commit()
+
+        # pk span on crm: clustered index, instant
+        ss_cur.execute(f"SELECT MIN([{pk_clm}]), MAX([{pk_clm}]) FROM {SRC}.[{table}]")
+        src_min, src_max = ss_cur.fetchone()                #type: ignore
+
+        if src_max is None or (last_pk_val is not None and src_max <= last_pk_val):
+            save_progress(pg_cur, table, category, last_pk_val, 0, "No_New_Data")
+            pg.commit()
+            return 0
+
+        lo = (src_min - 1) if last_pk_val is None else last_pk_val
+        ranges = []
+        while lo < src_max:
+            hi = min(lo + RANGE_ROWS, src_max)
+            ranges.append((lo, hi))
+            lo = hi
+    finally:
+        ss.close()
+        pg.close()
+
+    # fan out: one range per worker, one retry per range (the link drop usually passes second time)
+    results = {}                                            # lo -> (hi, rows, held_from) or None when failed
+    with ProcessPoolExecutor(max_workers=INNER_WORKERS) as pool:
+        pending = {pool.submit(sync_range, table, columns, pk_clm, r[0], r[1]): (r, 0) for r in ranges}
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for job in done:
+                r, attempt = pending.pop(job)
+                try:
+                    lo_, hi_, rows, held = job.result()
+                    results[lo_] = (hi_, rows, held)
+                except Exception as e:
+                    if attempt == 0:
+                        pending[pool.submit(sync_range, table, columns, pk_clm, r[0], r[1])] = (r, 1)
+                    else:
+                        print(f"  {table} range ({r[0]}, {r[1]}] FAILED twice -> {e}")
+                        results[r[0]] = None
+
+    # watermark: walk the ranges in pk order, stop at the first failure or hold-back
+    total, new_last_pk, failed = 0, last_pk_val, []
+    for r_lo, r_hi in ranges:
+        res = results.get(r_lo)
+        if res is None:
+            failed.append((r_lo, r_hi))
+            break
+        hi_, rows, held = res
+        total += rows
+        if held is not None:
+            new_last_pk = held - 1
+            break
+        new_last_pk = hi_
+
+    pg, pg_cur = get_postgres_cursor()
+    try:
+        if table in SEED_ROWS:
+            pg_cur.execute(SEED_ROWS[table])
+        status = "Partial" if failed else ("Done" if total > 0 else "No_New_Data")
+        save_progress(pg_cur, table, category, new_last_pk, total, status)
+        pg.commit()
+    finally:
+        pg.close()
+
+    if failed:
+        raise RuntimeError(
+            f"{table}: {len(failed)} range(s) failed, watermark held at {new_last_pk}, "
+            f"{total} rows loaded and kept"
+        )
+    return total
+
+
+
 def export_table_from_sql_to_psg(workers=4):
     """Sync tables level by level; parallel inside each level."""
     lookup = {table: (category, cols) for category, tables in TABLES_COLUMNS.items() for table, cols in tables.items()}
 
     with ProcessPoolExecutor(max_workers=workers) as pool:
         for level in LOAD_LEVELS:
-            jobs = {pool.submit(sync_table, table, lookup[table][1], lookup[table][0]): table for table in level if table in lookup}
+            jobs = {pool.submit(sync_large_table if table in LARGE_TABLES else sync_table,
+                                table, lookup[table][1], lookup[table][0]): table
+                    for table in level if table in lookup}
             for job in as_completed(jobs):
                 table = jobs[job]
                 category = lookup[table][0]

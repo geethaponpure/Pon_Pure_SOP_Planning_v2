@@ -99,6 +99,20 @@ Status: nothing built yet. This is the list of what each table needs.
 | ApSuppliers | `dim_supplier`: real suppliers only = `vendor_type_lookup_code = 'SUPPLIER'` (or in a po); active = `end_date_active is null or > today`; `terms_id::bigint` | 24k rows, ~3k are suppliers |
 
 
+
+## inventory_master
+
+| Table | What the view has to do | Why not at load |
+|---|---|---|
+| BiStockDetail | `fact_stock_position`: today's stock = rows where `trans_date = max(trans_date)`; by warehouse x item (sum `opening_qty` over sub-inventories and lots), value = `opening_qty x item_cost` | the raw table is one row per lot per day |
+| BiStockDetail | item resolution: `item_code` → `item_id` through a dedup of `ItemMasters` on `item_code` (latest `item_id` per code); then PC segments via `ItemCategories` | no item id on the table, `item_code` is not unique in the master |
+| BiStockDetail | stock trend: one row per warehouse x item x `trans_date`; for a weekly series use `TypeOfTrx = 'FRIDAY'`, month start `'FIRST_DAY'` (empty before 2023) | daily rows loaded, the grain is a report choice |
+| BiStockDetail | lot aging buckets: `trans_date - aging_date` in days → 0-30 / 31-60 / 61-90 / 90+ per lot; the `Quarantine` / `UNRECON` sub-inventories are not sellable stock, decide per report | |
+| BiStockDetail | days of cover = position / average daily dispatch (from `DispatchDetails`, same warehouse x item) | joins two facts, belongs in a view |
+| InventoryOrgLocations | `dim_warehouse`: org id, code, city via `InventoryOrgLocationMasters.location_id` (35 row master, not loaded yet), state, and the served collectors | |
+| InventoryOrgLocations | **split `collector_ids`** (`'1038,1039'`) into a bridge `warehouse_collector (inventory_org_id, collector_id)` | crm stores the mapping as a comma separated string |
+| InventoryOrgLocations | wire the other facts: `SaleOrderDtls`, `QuotationDtls`, `DispatchDetails`, `Schedules`, `BiPoDetails`, `PurchaseRequisitionHdrs` all carry `inventory_org_id` / `inv_org_id` and join here; `0` on orders / quotes = unknown (`-1`) | fks on loaded tables are a one-time alter, not done yet |
+
 ## cross cutting
 
 * **collector**: an order's `collector_id` (booking collector) differs from the ship-to site's circle collector on ~10% of orders. Both are legitimate; a report must say which one it uses.

@@ -8,7 +8,17 @@
 #---------------- masters: small, and their rows change (lead -> customer, status, circle). read in full ----------------
 #---------------- every run and merged on the pk. never truncated, everything else points at these -----------------------
 UPSERT_TABLES = {"Collectors", "MarketCircles", "CustomerMasters", "CustomerSites",
-                 "ItemMasters", "ItemCategories", "DeliveryFroms", "QuotationStatus", "JourneyCalendars", "ApSuppliers"}
+                 "ItemMasters", "ItemCategories", "DeliveryFroms", "QuotationStatus", 
+                 "JourneyCalendars", "ApSuppliers", "InventoryOrgLocations"}
+
+
+
+#---------------- incremental tables too big for one read. split into pk ranges, read in parallel ----------------
+#---------------- the watermark only moves over contiguous good ranges, a failed range is re-fetched next run -----
+LARGE_TABLES  = {"BiStockDetail"}
+RANGE_ROWS    = 250_000     # pk ids per range (rows per range are fewer after the source filter)
+INNER_WORKERS = 4           # crm connections one large table may open. keep outer x inner <= ~8
+
 
 
 #---------------------------------- no usable key in crm load full data everytime -------------------------------------
@@ -19,12 +29,13 @@ SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules",
 
 
 
-
 #---------------------------------------------Filter--------------------------------------------------
 SOURCE_FILTERS = {
     "ItemCategories": "[segment1] = 'Performance Chemicals'",
     # ~68k of 169k
     "BiPoDetails": "[inventory_item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
+    # no item id on the stock table, filter by item code. ~31% of each day. 2024 on = ~4M rows
+    "BiStockDetail": "[trans_date] >= '2024-01-01' AND [item_code] IN (SELECT i.item_code FROM [CRMPROD].[dbo].[ItemMasters] i JOIN [CRMPROD].[dbo].[ItemCategories] c ON c.item_id = i.item_id WHERE c.segment1 = 'Performance Chemicals')",
     "DispatchDetails": "[schedule_date] >= '2021-01-01' AND [item_segment] = 'Performance Chemicals'",
     # only the headers those details point at, so the fk always holds. ~253k of 1.4M
     "Dispatches": "[header_id] IN (SELECT header_id FROM [CRMPROD].[dbo].[DispatchDetails] WHERE [schedule_date] >= '2021-01-01' AND [item_segment] = 'Performance Chemicals')",
@@ -111,6 +122,16 @@ STAGE_FIXES = {
         '''UPDATE stage SET header_id = NULL
             WHERE NOT EXISTS (SELECT 1 FROM "PurchaseRequisitionHdrs" h WHERE h.header_id = stage.header_id)''',
     ],
+    "BiStockDetail": [
+        # warehouse not in the master -> unknown. 100% match today, safety net
+        '''UPDATE stage SET inventory_org_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgLocations" w WHERE w.inventory_org_id = stage.inventory_org_id)''',
+    ],
+    "InventoryOrgLocations": [
+        # one row has no org id, one org id (1666) appears twice. children need it unique
+        "DELETE FROM stage WHERE inventory_org_id IS NULL",
+        "DELETE FROM stage a USING stage b WHERE a.inventory_org_id = b.inventory_org_id AND a.header_id > b.header_id",
+    ],
     "PurchaseRequisitionHdrs": [
         # 178 unfinished drafts carry supplier 0 -> null
         '''UPDATE stage SET supplier_id = NULL
@@ -196,6 +217,9 @@ STAGE_FIXES = {
 
 #------------------------------------- Catch-all parent rows -------------------------------------
 SEED_ROWS = {
+    "InventoryOrgLocations": '''INSERT INTO "InventoryOrgLocations" (header_id, inventory_org_id, inventory_org_code)
+                          VALUES (-1, -1, 'unknown')
+                          ON CONFLICT (header_id) DO NOTHING''',
     "JourneyCalendars": '''INSERT INTO "JourneyCalendars" (line_id, name, acc_year, effective_from, effective_to, is_active, is_closed)
                           VALUES (-1, 'unknown', 'unknown', '1900-01-01', '1900-01-01', false, false)
                           ON CONFLICT (line_id) DO NOTHING''',
@@ -244,6 +268,7 @@ PARENT_CHECK = {
                          ("customer_id",               "CustomerMasters", "customer_id")],
     "BiPoDetails":     [("inventory_item_id", "ItemMasters", "item_id"),
                         ("vendor_id",         "ApSuppliers", "vendor_id")],
+    "BiStockDetail":   [("inventory_org_id", "InventoryOrgLocations", "inventory_org_id")],
     "PurchaseRequisitionHdrs": [("collector_id", "Collectors",  "collector_id"),
                                 ("supplier_id",  "ApSuppliers", "vendor_id")],
     "PurchaseRequisitionDtls": [("header_id",      "PurchaseRequisitionHdrs", "header_id"),
@@ -281,9 +306,10 @@ PARENT_CHECK = {
 
 #---------------------------- Parent tables must load before child tables -------------------------------------
 LOAD_LEVELS = [
-    ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms", "QuotationStatus", "JourneyCalendars", "ApSuppliers"],   # no parents
+    ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms", "QuotationStatus", "JourneyCalendars", "ApSuppliers",
+     "InventoryOrgLocations"],                                                                                # no parents
     ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "BiPoDetails", "PurchaseRequisitionHdrs"],   # need level 0
-    ["CustomerSites", "PurchaseRequisitionDtls"],                        # need CustomerMasters + MarketCircles / PurchaseRequisitionHdrs
+    ["CustomerSites", "PurchaseRequisitionDtls", "BiStockDetail"],       # need CustomerMasters + MarketCircles / PurchaseRequisitionHdrs / InventoryOrgLocations. BiStockDetail is large: 4 inner workers
     ["SaleOrderHdrs", "QuotationHdrs", "SCBusinessMonthlyPlanHdrs"],     # need Collectors, CustomerMasters, CustomerSites (+ MarketCircles, QuotationStatus)
     ["SaleOrderDtls", "SocPendingDetails", "Dispatches", "QuotationDtls", "SCBusinessMonthlyPlanDtls"],   # need the level 3 headers (+ ItemMasters / MarketCircles / sites)
     ["Schedules", "SocCancelDetails", "SCBusinessMonthlyPlanJCDtls"],    # level 5, need SaleOrderDtls / SCBusinessMonthlyPlanDtls

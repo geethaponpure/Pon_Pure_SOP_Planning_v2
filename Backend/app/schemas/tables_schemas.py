@@ -617,4 +617,36 @@ TABLES_COLUMNS = {
     ],
 },
 
+
+#-------------------------------------------- Inventory / stock --------------------------------------------
+"inventory_master" : {
+    "InventoryOrgLocations": [    # warehouse master, 188 rows. upsert, level 0
+        "header_id",              # pk, crm row id. -1 = unknown
+        "inventory_org_id",       # the oracle warehouse id every fact table carries. unique here, 1 null + 1 dup row dropped on stage
+        "inventory_org_code",     # 051, 202 ..
+        "location_id",            # InventoryOrgLocationMasters (city), not loaded. empty on 6%
+        "State_id",               # 10 values, no master loaded
+        "collector_ids",          # comma separated collectors this warehouse serves e.g. '1038,1039'. split in views
+        "creation_date",          # empty on 98%, crm back-filled the table
+        "last_update_date",
+    ],
+
+    "BiStockDetail": [            # daily stock per warehouse x item x lot. 31M rows in crm, we load PC from 2024, incremental in parallel pk ranges
+        "header_id",              # pk, monotonic with sync_date. the incremental key
+        "stock_id",               # oracle stock line id, a new one every day
+        "sync_date",              # when crm pulled it
+        "trans_date",             # the snapshot day
+        "TypeOfTrx",              # DailyBasics / FRIDAY / FIRST_DAY / JC_START_DATE, empty before 2023
+        "company_id",
+        "operating_name",         # PPC / POI / PCT ..
+        "inventory_org_id",       # -> InventoryOrgLocations.inventory_org_id, 100% match. -1 if ever missing
+        "item_code",              # ItemMasters.item_code, soft link (not unique there). no item id on this table
+        "subinventory_code",      # SHED A / Quarantine / UNRECON ..
+        "lot_number",
+        "opening_qty",            # on hand that day
+        "ITEM_COST",              # unit cost
+        "aging_date",             # lot receipt date, age = trans_date - aging_date
+    ],
+},
+
 }

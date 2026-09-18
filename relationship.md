@@ -429,6 +429,63 @@ Things to know:
 
 
 
+# CRM Inventory_Master Data Model
+
+
+The CRM Inventory data model consists of two main tables:
+
+- InventoryOrgLocations
+- BiStockDetail
+
+The logical business relationship is:
+
+```text
+  ┌───────────────────────────┐
+  │   InventoryOrgLocations   │   warehouse master, 186 rows. inventory_org_id is the key every
+  │   pk: header_id           │   fact table carries (orders, dispatch, schedules, pos, requisitions,
+  │   unique: inventory_org_id│   stock). -1 = unknown
+  └─────────────▲─────────────┘
+                │ inventory_org_id  (N : 1)
+                │
+  ┌───────────────────────────┐
+  │       BiStockDetail       │   daily on-hand stock per warehouse x item x sub-inventory x lot.
+  │       pk: header_id       │   31M rows in crm since 2020 (~36k a day), we load performance
+  └─────────────┬─────────────┘   chemicals from 2024-01-01, incremental by header_id
+                ┆ item_code
+                ┆ soft link, no fk (item_code is not unique in ItemMasters)
+                ▼
+          ItemMasters.item_code
+
+  ───►  enforced foreign key        ┄┄►  soft link, joinable but not enforced
+```
+
+The relationships represent:
+
+* One warehouse (`InventoryOrgLocations`) has many stock rows per day: one `BiStockDetail` row per item x sub-inventory x lot, each day. `stock_id` / `header_id` are new every day, so the same lot appears once per snapshot day.
+* `BiStockDetail` has **no item id**, only `item_code`. It matches `ItemMasters.item_code` on every row, but that column is not unique there (6 duplicate codes), so it stays a soft link; views resolve it through a dedup of `ItemMasters` on code.
+* `InventoryOrgLocations` is upsert (master). `BiStockDetail` is incremental by `header_id` - rows are appended daily and never edited - and it is the first **large table**: read in parallel pk ranges (`LARGE_TABLES`, 250k ids per range, 4 workers), the watermark only advances over contiguous good ranges.
+* Seven already loaded tables carry `inventory_org_id` and resolve against this master (100% except a `0` on `SaleOrderDtls` / `QuotationDtls`). Their fks are not wired yet - that is a one-time alter on loaded tables, kept as a separate step.
+
+Links to the master tables:
+
+```text
+BiStockDetail.inventory_org_id           → InventoryOrgLocations.inventory_org_id   (100%, -1 if ever missing)
+BiStockDetail.item_code                    ItemMasters.item_code                    (soft, not unique there)
+InventoryOrgLocations.location_id          InventoryOrgLocationMasters.location_id  (35 row city master, not loaded)
+```
+
+Things to know:
+
+* `BiStockDetail` is 73% of everything in crm and has **no index on `sync_date`**: any date filter on the source is a 31M row scan. `header_id` is the clustered key and monotonic with `sync_date` (a new day starts at a higher id), so all access goes through `header_id` ranges; the date and item filters are applied inside each range.
+* Filter: `trans_date >= 2024-01-01` and performance chemicals item codes. ~31% of each day is PC (11,400 of 36,530 rows on 2026-09-18). Moving the start date is one string in `SOURCE_FILTERS` plus a reset of the table's `crm_sync_metadata` row.
+* `TypeOfTrx` tags the snapshot day: `DailyBasics`, `FRIDAY`, `FIRST_DAY` (of month), `JC_START_DATE`; empty before 2023. Views can pick a weekly or month-start series from it without re-loading.
+* `trans_date` is the snapshot day, `sync_date` the time crm pulled it, `aging_date` the lot's receipt date (`age = trans_date - aging_date`). `opening_qty` is on hand that day, `ITEM_COST` the unit cost (`transaction_cost` is 94% empty and not loaded).
+* `InventoryOrgLocations` in crm has one row with no `inventory_org_id` and one id (`1666`) twice - both dropped on stage so the unique holds. `collector_id` is empty on 98%; the branches a warehouse serves are in `collector_ids` as a comma separated string (`'1038,1039'`), loaded as text, split in views.
+* Today's stock position = rows where `trans_date = max(trans_date)`; the history gives the stock trend.
+
+
+
+
 
 
 
@@ -451,6 +508,7 @@ Things to know:
 | 0 | QuotationStatus | `line_id` | upsert | – | – | – | QuotationHdrs, QuotationDtls |
 | 0 | JourneyCalendars | `line_id` | upsert | – | – | `unknown` (-1) | SCBusinessMonthlyPlanJCDtls |
 | 0 | ApSuppliers | `vendor_id` | upsert | – | – | – | BiPoDetails, PurchaseRequisitionHdrs |
+| 0 | InventoryOrgLocations | `header_id` (unique inventory_org_id) | upsert | – | drop null org id, drop duplicate `1666` | `unknown` (-1) | BiStockDetail |
 | 1 | MarketCircles | `header_id` | upsert | – | lower/trim | `unknown` (-1) | CustomerSites, SaleOrderHdrs, … |
 | 1 | ItemCategories | `header_id` | upsert | PC only | drop orphans | – | – |
 | 1 | PurchaseRequisitionPtoPts | `Header_id → header_id` | incremental | – | – | – | – |
@@ -458,6 +516,7 @@ Things to know:
 | 1 | PurchaseRequisitionHdrs | `header_id` | snapshot | – | collector `0` → NULL, supplier `0` → NULL | – | PurchaseRequisitionDtls |
 | 2 | CustomerSites | `line_id` | upsert | – | lower/trim + `unknown`, drop duplicate site_use_id | `unknown` (-1) | SaleOrderHdrs, Dispatches, Schedules, … |
 | 2 | PurchaseRequisitionDtls | `line_id` | snapshot | – | customer / collector `0` → NULL, po_line_id `0` → NULL, blank header_id if not loaded | – | – |
+| 2 | BiStockDetail | `header_id` | incremental, **large** (pk ranges, 4 workers) | trans_date ≥ 2024 and PC item code | warehouse not in master → `-1` | – | – |
 | 3 | SaleOrderHdrs | `header_id` | incremental | – | missing site → `-1` on bill_to / ship_to | – | SaleOrderDtls, SocPendingDetails, Dispatches, Schedules, SocCancelDetails, DispatchDetails |
 | 3 | QuotationHdrs | `header_id` | snapshot | headers the loaded QuotationDtls point at | customer / sites `0` → `-1`, mc_code lower/trim + `unknown` | – | QuotationDtls |
 | 3 | SCBusinessMonthlyPlanHdrs | `header_id` | snapshot | – | customer `0` → `-1`, wrong site → `-1` (NULL kept), new_customer_marketcircle lower/trim + `unknown` | – | SCBusinessMonthlyPlanDtls, SCBusinessMonthlyPlanJCDtls |
@@ -473,6 +532,7 @@ Things to know:
 
 Snapshot = wiped and reloaded in full every run (rows change after creation in crm). Incremental = `pk > last loaded pk`, rows never change. Upsert = masters: read in full every run and merged on the pk, never truncated (children point at them), so a lead that becomes a customer or a site that moves circle is picked up.
 Parents load before children (levels). If a child arrives before its parent (crm moved on during the run), incremental tables hold the row back until the next run; snapshot tables blank the fk and the next full reload fixes it.
+Large = an incremental table too big for one read (`LARGE_TABLES`): the pk span is split into ranges of `RANGE_ROWS` ids, `INNER_WORKERS` processes each read one range with its own crm connection and commit it on its own. The watermark moves only over contiguous good ranges, so a failed range is re-fetched next run and rows loaded above it are absorbed by `ON CONFLICT DO NOTHING` - no gaps, no duplicates.
 
 
 

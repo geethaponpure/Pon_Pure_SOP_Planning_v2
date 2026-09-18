@@ -8,6 +8,7 @@ from .models.dispatch_master import DeliveryFroms, Dispatches, DispatchDetails, 
 from .models.quotation_master import QuotationStatus, QuotationHdrs, QuotationDtls
 from .models.business_plan import JourneyCalendars, SCBusinessMonthlyPlanHdrs, SCBusinessMonthlyPlanDtls, SCBusinessMonthlyPlanJCDtls
 from .models.purchase_master import ApSuppliers, BiPoDetails, PurchaseRequisitionHdrs, PurchaseRequisitionDtls
+from .models.inventory_master import InventoryOrgLocations, BiStockDetail
 from contextlib import asynccontextmanager
 from .core.config import settings
 from sqlalchemy import text
