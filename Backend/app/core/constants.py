@@ -99,8 +99,10 @@ CRM_TABLES = {
 
 # ────────────────────────────── Inventory / stock ─────────────────────────────────────────────────
     "inventory_master": [
+        "InventoryOrgs",                    # warehouse master, replaces InventoryOrgLocations (same 186 ids, richer)
         "BiStockDetail",
-        "InventoryOrgLocations"                    
+        "ItemInventoryOrgMappings",         # which item may be stocked at which warehouse
+        "BiCollectorInventoryOrgMapping"    # which warehouse serves which collector
     ],
 
 # ────────────────────────────── Users, roles & data-scope mappings ────────────────────────────────

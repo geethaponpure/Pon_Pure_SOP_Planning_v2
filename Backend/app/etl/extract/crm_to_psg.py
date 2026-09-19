@@ -1,5 +1,6 @@
 import csv
 import io
+import time
 import pyodbc
 import psycopg2
 from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
@@ -9,7 +10,7 @@ from app.core.constants import SQL_TO_PG_TYPES, CRM_TABLES
 from app.core.config import settings
 from app.etl.extract.utils import (SOURCE_FILTERS, SEED_ROWS, STAGE_FIXES, LOAD_LEVELS,
                                    SNAPSHOT_TABLES, UPSERT_TABLES, PARENT_CHECK,
-                                   LARGE_TABLES, RANGE_ROWS, INNER_WORKERS)
+                                   LARGE_TABLES, RANGE_ROWS, INNER_WORKERS, DERIVED_COLUMNS)
 
 #==================================================================================
 
@@ -167,13 +168,14 @@ def load_stage(pg_cur, ss_cur, table, columns, pk_clm, upsert=False):
     for fix in STAGE_FIXES.get(table, []):
         pg_cur.execute(fix)
 
-    # Get columns in PSG format
-    cols = get_columns_psg_format(columns)
+    # Columns to land: what came from crm plus what the stage fixes derived (e.g. BiStockDetail.item_id)
+    all_cols = list(columns) + DERIVED_COLUMNS.get(table, [])
+    cols = get_columns_psg_format(all_cols)
 
     #Insert data into PSG table
     if upsert:
         # merge: new rows inserted, existing rows updated column by column
-        non_pk = [c for c in columns if c.lower() != pk_clm.lower()]            #type: ignore
+        non_pk = [c for c in all_cols if c.lower() != pk_clm.lower()]           #type: ignore
         set_clause = ", ".join(f'"{c.lower()}" = EXCLUDED."{c.lower()}"' for c in non_pk)
         pg_cur.execute(
             f'INSERT INTO "{table}" ({cols}) '
@@ -448,6 +450,7 @@ def export_table_from_sql_to_psg(workers=4):
 
     with ProcessPoolExecutor(max_workers=workers) as pool:
         for level in LOAD_LEVELS:
+            start = time.perf_counter()
             jobs = {pool.submit(sync_large_table if table in LARGE_TABLES else sync_table,
                                 table, lookup[table][1], lookup[table][0]): table
                     for table in level if table in lookup}
@@ -455,7 +458,8 @@ def export_table_from_sql_to_psg(workers=4):
                 table = jobs[job]
                 category = lookup[table][0]
                 try:
-                    print(f"[{category}] {table}: {job.result()} rows")
+                    end = time.perf_counter()
+                    print(f"[{category}] {table}: {job.result()} rows = [Time]:{(end-start)/60:.2f}mins")
                 except Exception as e:
                     print(f"[{category}] {table}: FAILED -> {e}")
 

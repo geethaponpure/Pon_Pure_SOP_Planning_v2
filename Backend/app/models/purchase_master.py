@@ -57,7 +57,7 @@ class BiPoDetails(Base):
     vendor_name = Column(Text)
     vendor_site_id = Column(BigInteger)
     ship_to_location_id = Column(BigInteger)
-    inv_org_id = Column(BigInteger)                                          # receiving warehouse
+    inv_org_id = Column(BigInteger, ForeignKey("InventoryOrgs.inventory_org_id"), index=True)   # receiving warehouse. -1 if not in the master
     procurement_type = Column(Text)                                          # Domestic / Market / Import Procurement / Packing Materials. the reliable classifier
     purchase_category = Column(Text)                                         # Market-Packed / Domestic-Bulk .. '0' on old pos
     inventory_item_id = Column(BigInteger, ForeignKey("ItemMasters.item_id"), index=True)
@@ -71,6 +71,7 @@ class BiPoDetails(Base):
 
     item = relationship("ItemMasters")
     vendor = relationship("ApSuppliers", back_populates="purchase_orders")
+    warehouse = relationship("InventoryOrgs")
 
 
 
@@ -97,8 +98,8 @@ class PurchaseRequisitionHdrs(Base):
     payment_term_id = Column(BigInteger, nullable=False)
     payment_term = Column(Text)
     deliverytermid = Column(Text)                                            # CFR / CIF / FOB on imports
-    ship_to_inv_org_id = Column(BigInteger, nullable=False)                  # receiving warehouse
-    bill_to_inv_org_id = Column(BigInteger, nullable=False)
+    ship_to_inv_org_id = Column(BigInteger, ForeignKey("InventoryOrgs.inventory_org_id"), nullable=False, index=True)   # receiving warehouse. -1 if not in the master
+    bill_to_inv_org_id = Column(BigInteger, ForeignKey("InventoryOrgs.inventory_org_id"), nullable=False, index=True)
     status_id = Column(BigInteger, nullable=False)                           # 0 .. 7, no master in crm. 6 = approved (91%), 7 = rejected, 0 = draft
     record_submit = Column(Text)                                             # Y / N / R
     isconfirmed = Column(Boolean)
@@ -108,6 +109,8 @@ class PurchaseRequisitionHdrs(Base):
     lines = relationship("PurchaseRequisitionDtls", back_populates="header")
     collector = relationship("Collectors")
     supplier = relationship("ApSuppliers", back_populates="requisitions")
+    ship_to_warehouse = relationship("InventoryOrgs", foreign_keys=[ship_to_inv_org_id])
+    bill_to_warehouse = relationship("InventoryOrgs", foreign_keys=[bill_to_inv_org_id])
 
 
 

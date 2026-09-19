@@ -77,7 +77,7 @@ class QuotationDtls(Base):
     tax_percentage = Column(Numeric(18, 2), nullable=False)
     delivery_from_id = Column(BigInteger, ForeignKey("DeliveryFroms.line_id"), index=True)   # -1 when crm has 0
     sale_category = Column(Text)                                             # Intact / Repack / Bulk
-    inventory_org_id = Column(BigInteger, nullable=False)                    # warehouse
+    inventory_org_id = Column(BigInteger, ForeignKey("InventoryOrgs.inventory_org_id"), nullable=False, index=True)   # warehouse. -1 if not in the master
     delivery_date = Column(DateTime)                                         # 1 junk row nulled
     status_id = Column(BigInteger, ForeignKey("QuotationStatus.line_id"), index=True)   # null when crm has 0
     creation_date = Column(DateTime)
@@ -87,3 +87,4 @@ class QuotationDtls(Base):
     item = relationship("ItemMasters")
     status = relationship("QuotationStatus")
     delivery_from = relationship("DeliveryFroms")
+    warehouse = relationship("InventoryOrgs")

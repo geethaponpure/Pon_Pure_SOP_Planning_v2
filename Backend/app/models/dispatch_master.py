@@ -42,7 +42,7 @@ class Dispatches(Base):
     despatch_status_id = Column(BigInteger)                                  # 1 Pending / 3 MoveToOracle / 4 InvoiceCancel
     currency = Column(Text)                                                  # INR / USD / EUR
     sum_of_despatch_quantity = Column(Numeric(18, 2), nullable=False)        # header total, matches detail sum on 98.6%
-    inventory_org_id = Column(BigInteger)                                    # shipping warehouse
+    inventory_org_id = Column(BigInteger, ForeignKey("InventoryOrgs.inventory_org_id"), index=True)   # shipping warehouse. -1 if not in the master
     trx_number = Column(Text, index=True)                                    # oracle invoice number, empty till invoiced
     trx_date = Column(Date, index=True)                                      # invoice date
     sum_of_despatch_value = Column(Numeric(18, 5))
@@ -59,6 +59,7 @@ class Dispatches(Base):
     collector = relationship("Collectors")
     bill_to_site = relationship("CustomerSites", foreign_keys=[bill_to_customer_site_id])
     ship_to_site = relationship("CustomerSites", foreign_keys=[ship_to_customer_site_id])
+    warehouse = relationship("InventoryOrgs")
 
 
 
@@ -75,7 +76,7 @@ class Schedules(Base):
     schedule_date = Column(Date, index=True)                                 # planned dispatch date, junk year nulled
     reschedule_date = Column(Date)                                           # differs from schedule_date on 18%
     reschedule_reason = Column(Text)                                         # Customer Requested / Stock Not Available ..
-    inventory_org_id = Column(BigInteger, nullable=False)                    # planned shipping warehouse
+    inventory_org_id = Column(BigInteger, ForeignKey("InventoryOrgs.inventory_org_id"), nullable=False, index=True)   # planned shipping warehouse. -1 if not in the master
     customer_requested_date = Column(Date)                                   # what the customer asked for
     schedule_quantity = Column(Numeric(18, 2), nullable=False)
     bill_to_customer_site_id = Column(BigInteger, ForeignKey("CustomerSites.site_use_id"), index=True)
@@ -96,6 +97,7 @@ class Schedules(Base):
     customer = relationship("CustomerMasters")
     bill_to_site = relationship("CustomerSites", foreign_keys=[bill_to_customer_site_id])
     ship_to_site = relationship("CustomerSites", foreign_keys=[ship_to_customer_site_id])
+    warehouse = relationship("InventoryOrgs")
 
 
 class SocCancelDetails(Base):
@@ -108,7 +110,7 @@ class SocCancelDetails(Base):
     schedule_line_id = Column(BigInteger, nullable=False)                    # reference only, schedule is often deleted after the cancel (60% match)
     item_id = Column(BigInteger, ForeignKey("ItemMasters.item_id"), nullable=False, index=True)
     customer_id = Column(BigInteger, ForeignKey("CustomerMasters.customer_id"), nullable=False, index=True)
-    inventory_org_id = Column(BigInteger, nullable=False)
+    inventory_org_id = Column(BigInteger, ForeignKey("InventoryOrgs.inventory_org_id"), nullable=False, index=True)   # -1 if not in the master
     sale_category = Column(Text)                                             # Intact / Repack / Bulk ..
     schedule_date = Column(Date)                                             # the schedule that got cancelled
     schedule_quantity = Column(Numeric(18, 2), nullable=False)
@@ -124,6 +126,7 @@ class SocCancelDetails(Base):
     order_line = relationship("SaleOrderDtls")
     item = relationship("ItemMasters")
     customer = relationship("CustomerMasters")
+    warehouse = relationship("InventoryOrgs")
 
 
 class DispatchDetails(Base):
@@ -139,7 +142,7 @@ class DispatchDetails(Base):
     schedule_date = Column(Date, index=True)                                 # the dispatch date. time part dropped, junk year nulled
     sale_category = Column(Text)                                             # Intact / Repack / Bulk / E-Commerce
     packing_cost = Column(Numeric(18, 2), nullable=False)
-    inventory_org_id = Column(BigInteger)                                    # shipping warehouse
+    inventory_org_id = Column(BigInteger, ForeignKey("InventoryOrgs.inventory_org_id"), index=True)   # shipping warehouse. -1 if not in the master
     sale_order_header_id = Column(BigInteger, ForeignKey("SaleOrderHdrs.header_id"), index=True)
     sale_order_detail_line_id = Column(BigInteger, ForeignKey("SaleOrderDtls.line_id"), index=True)
     schedule_line_id = Column(BigInteger, ForeignKey("Schedules.line_id"), index=True)     # the schedule this dispatch fulfils
@@ -157,3 +160,4 @@ class DispatchDetails(Base):
     order = relationship("SaleOrderHdrs")
     order_line = relationship("SaleOrderDtls")
     item = relationship("ItemMasters")
+    warehouse = relationship("InventoryOrgs")

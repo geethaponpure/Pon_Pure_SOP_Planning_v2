@@ -134,7 +134,7 @@ TABLES_COLUMNS = {
         "delivery_from_id",       # -> DeliveryFroms.line_id. 542 lines carry 0 -> -1
         "sale_category",          # Intact / Repack / Bulk
         "delivery_date",          # promised date
-        "inventory_org_id",       # which warehouse serves the line
+        "inventory_org_id",       # -> InventoryOrgs.inventory_org_id, which warehouse serves the line. -1 when crm has 0
         "item_group",             # same as ItemMasters.item_group, just a copy
         "creation_date",
         "last_update_date",       # 99% empty, crm never updates lines
@@ -192,7 +192,7 @@ TABLES_COLUMNS = {
         "despatch_status_id",     # 1 Pending / 3 MoveToOracle / 4 InvoiceCancel
         "currency",               # INR / USD / EUR
         "sum_of_despatch_quantity",   # header total qty
-        "inventory_org_id",       # shipping warehouse
+        "inventory_org_id",       # -> InventoryOrgs.inventory_org_id, shipping warehouse. -1 if not in the master
         "trx_number",             # oracle invoice number, empty till invoiced (7%)
         "trx_date",               # invoice date
         "sum_of_despatch_value",  # header total value
@@ -214,7 +214,7 @@ TABLES_COLUMNS = {
         "schedule_date",          # planned dispatch date. stored as date, junk year row -> null
         "reschedule_date",        # differs from schedule_date on 18% = real reschedules
         "reschedule_reason",      # Customer Requested / Stock Not Available ..
-        "inventory_org_id",       # planned shipping warehouse
+        "inventory_org_id",       # -> InventoryOrgs.inventory_org_id, planned shipping warehouse. -1 if not in the master
         "customer_requested_date",    # what the customer asked for
         "schedule_quantity",
         "bill_to_customer_site_id",   # -> CustomerSites.site_use_id, 0 -> -1
@@ -236,7 +236,7 @@ TABLES_COLUMNS = {
         "schedule_line_id",       # Schedules.line_id, reference only. schedule is often deleted after the cancel
         "item_id",                # -> ItemMasters
         "customer_id",            # -> CustomerMasters.customer_id
-        "inventory_org_id",       # warehouse
+        "inventory_org_id",       # -> InventoryOrgs.inventory_org_id. -1 if not in the master
         "sale_category",          # Intact / Repack / Bulk ..
         "schedule_date",          # the schedule that got cancelled
         "schedule_quantity",      # what was scheduled
@@ -259,7 +259,7 @@ TABLES_COLUMNS = {
         "schedule_date",          # the dispatch date. stored as date, junk year 9019 row -> null
         "sale_category",          # Intact / Repack / Bulk / E-Commerce
         "packing_cost",
-        "inventory_org_id",       # shipping warehouse
+        "inventory_org_id",       # -> InventoryOrgs.inventory_org_id, shipping warehouse. -1 if not in the master
         "sale_order_header_id",   # -> SaleOrderHdrs
         "sale_order_detail_line_id",  # -> SaleOrderDtls, the main link
         "schedule_line_id",       # -> Schedules.line_id, the schedule this dispatch fulfils
@@ -321,7 +321,7 @@ TABLES_COLUMNS = {
         "tax_percentage",
         "delivery_from_id",       # -> DeliveryFroms. 587 zeros -> -1
         "sale_category",          # Intact / Repack / Bulk
-        "inventory_org_id",       # warehouse
+        "inventory_org_id",       # -> InventoryOrgs.inventory_org_id. -1 if not in the master
         "delivery_date",          # 1 junk row -> null
         "status_id",              # -> QuotationStatus. 536 rows carry 0 -> null
         "creation_date",
@@ -537,7 +537,7 @@ TABLES_COLUMNS = {
         "vendor_name",
         "vendor_site_id",
         "ship_to_location_id",
-        "inv_org_id",             # receiving warehouse
+        "inv_org_id",             # -> InventoryOrgs.inventory_org_id, receiving warehouse. -1 if not in the master
         "procurement_type",       # Domestic / Market / Import Procurement / Packing Materials. the reliable classifier
         "purchase_category",      # Market-Packed / Domestic-Bulk .. '0' on 37% (old pos)
         "inventory_item_id",      # -> ItemMasters.item_id, 100% match
@@ -567,8 +567,8 @@ TABLES_COLUMNS = {
         "payment_term_id",
         "payment_term",           # Immediate / 60 days ..
         "DeliveryTermId",         # CFR / CIF / FOB on imports, else empty
-        "ship_to_inv_org_id",     # receiving warehouse
-        "bill_to_inv_org_id",
+        "ship_to_inv_org_id",     # -> InventoryOrgs.inventory_org_id, receiving warehouse. -1 if not in the master
+        "bill_to_inv_org_id",     # -> InventoryOrgs.inventory_org_id. -1 if not in the master
         "status_id",              # 0 .. 7, no master in crm. 6 = approved (91%), 7 = rejected, 0 = draft. status text column is always empty
         "record_submit",          # Y / N / R
         "IsConfirmed",
@@ -620,15 +620,22 @@ TABLES_COLUMNS = {
 
 #-------------------------------------------- Inventory / stock --------------------------------------------
 "inventory_master" : {
-    "InventoryOrgLocations": [    # warehouse master, 188 rows. upsert, level 0
-        "header_id",              # pk, crm row id. -1 = unknown
-        "inventory_org_id",       # the oracle warehouse id every fact table carries. unique here, 1 null + 1 dup row dropped on stage
-        "inventory_org_code",     # 051, 202 ..
-        "location_id",            # InventoryOrgLocationMasters (city), not loaded. empty on 6%
-        "State_id",               # 10 values, no master loaded
-        "collector_ids",          # comma separated collectors this warehouse serves e.g. '1038,1039'. split in views
-        "creation_date",          # empty on 98%, crm back-filled the table
-        "last_update_date",
+    "InventoryOrgs": [            # warehouse master, 186 rows, clean. crm rewrites it wholesale so upsert. level 1 (collector fk)
+        "inventory_org_id",       # pk, the oracle warehouse id every fact table carries. -1 = unknown
+        "organization_id",        # operating company, 101 on two thirds. no master loaded
+        "inventory_org_code",     # 101, 202, PMO .. unique
+        "inventory_org_name",     # PPC - Madhavaram ..
+        "city",
+        "state",
+        "is_active",              # 24 disabled, 4 of them still hold stock. don't filter on it
+        "disable_date",
+        "collector_id",           # -> Collectors, home collector. filled on 103, 0 -> null. full mapping is BiCollectorInventoryOrgMapping
+        "Is_MFG_Orgs",            # 1 = plant (14). null = not set
+        "is_port",                # 38 port warehouses. null = not set
+        "is_methanol",            # 38. null = not set
+        "RepackWh_Enable",        # 1 = repack warehouse (62). null = not set
+        # skipped: location_id (0 match the 35 row city master, a different id space), address, lat/long,
+        # creation/last_update_date (185 rows stamped the same second, crm rewrites the table), workflow config flags
     ],
 
     "BiStockDetail": [            # daily stock per warehouse x item x lot. 31M rows in crm, we load PC from 2024, incremental in parallel pk ranges
@@ -639,13 +646,35 @@ TABLES_COLUMNS = {
         "TypeOfTrx",              # DailyBasics / FRIDAY / FIRST_DAY / JC_START_DATE, empty before 2023
         "company_id",
         "operating_name",         # PPC / POI / PCT ..
-        "inventory_org_id",       # -> InventoryOrgLocations.inventory_org_id, 100% match. -1 if ever missing
-        "item_code",              # ItemMasters.item_code, soft link (not unique there). no item id on this table
+        "inventory_org_id",       # -> InventoryOrgs.inventory_org_id, 100% match. -1 if ever missing
+        "item_code",              # the only item key crm gives here. our table adds item_id from it on stage (latest ItemMasters id per code, -1 if none) -> hard fk to ItemMasters
         "subinventory_code",      # SHED A / Quarantine / UNRECON ..
         "lot_number",
         "opening_qty",            # on hand that day
         "ITEM_COST",              # unit cost
         "aging_date",             # lot receipt date, age = trans_date - aging_date
+    ],
+
+    "ItemInventoryOrgMappings": [ # which item may be stocked at which warehouse, one row per pair. 324k in crm, PC only = 225k. snapshot, level 2
+        "header_id",              # pk
+        "item_id",                # -> ItemMasters, 100% match
+        "inventory_org_id",       # -> InventoryOrgs, 100% match. 177 of 186 warehouses appear
+        "enabled_flag",           # Y / N. N = item may not be stocked here (641 rows)
+        "internal_order_enabled_flag",   # Y / N. N = no stock transfer into this warehouse for the item (9%)
+        "creation_date",
+        "last_update_date",       # the flags get toggled, ~1,400 rows a month. rows also get deleted, hence snapshot
+        # skipped: code_combination_id (gl account combo), internal_order_flag (99.9% Y), created_by / last_updated_by (always -1), SyncDate (null on 42%)
+    ],
+
+    "BiCollectorInventoryOrgMapping": [   # which warehouses a branch is configured to draw from. 496 rows = 422 pairs, only 60 of 129 collectors mapped. snapshot, level 2
+        "Header_id",              # pk. 75 gaps, rows get deleted
+        "collector_id",           # -> Collectors, 100% match
+        "Inventory_org_id",       # -> InventoryOrgs, 100% match
+        "startdate",              # since when. crm re-inserts a pair with a new startdate instead of editing, later copies dropped on stage
+        "EndDate",                # set on 1 row only, mappings are never closed
+        "creation_date",
+        "last_update_date",
+        # skipped: EUCCOB_InvOrgId (always = Inventory_org_id or null), created_by / last_updated_by (always 1)
     ],
 },
 

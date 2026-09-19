@@ -57,7 +57,7 @@ class SaleOrderDtls(Base):
     delivery_from_id = Column(BigInteger, ForeignKey("DeliveryFroms.line_id"), nullable=False, index=True)   # -1 when crm has 0
     sale_category = Column(Text)                                             # Intact / Repack / Bulk
     delivery_date = Column(DateTime)
-    inventory_org_id = Column(BigInteger, nullable=False)                    # which warehouse serves it
+    inventory_org_id = Column(BigInteger, ForeignKey("InventoryOrgs.inventory_org_id"), nullable=False, index=True)   # which warehouse serves it. -1 when crm has 0
     item_group = Column(Text)
     creation_date = Column(DateTime)
     last_update_date = Column(DateTime)                                      # 99% empty, crm never updates lines
@@ -67,6 +67,7 @@ class SaleOrderDtls(Base):
     order = relationship("SaleOrderHdrs", back_populates="lines")
     item = relationship("ItemMasters")
     delivery_from = relationship("DeliveryFroms", back_populates="order_lines")
+    warehouse = relationship("InventoryOrgs")
 
 
 

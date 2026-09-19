@@ -9,7 +9,7 @@
 #---------------- every run and merged on the pk. never truncated, everything else points at these -----------------------
 UPSERT_TABLES = {"Collectors", "MarketCircles", "CustomerMasters", "CustomerSites",
                  "ItemMasters", "ItemCategories", "DeliveryFroms", "QuotationStatus", 
-                 "JourneyCalendars", "ApSuppliers", "InventoryOrgLocations"}
+                 "JourneyCalendars", "ApSuppliers", "InventoryOrgs"}
 
 
 
@@ -22,10 +22,19 @@ INNER_WORKERS = 4           # crm connections one large table may open. keep out
 
 
 #---------------------------------- no usable key in crm load full data everytime -------------------------------------
-SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules", 
+SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules",
                    "DispatchDetails", "QuotationHdrs", "QuotationDtls",
                    "SCBusinessMonthlyPlanHdrs", "SCBusinessMonthlyPlanDtls", "SCBusinessMonthlyPlanJCDtls",
-                   "BiPoDetails", "PurchaseRequisitionHdrs", "PurchaseRequisitionDtls"}
+                   "BiPoDetails", "PurchaseRequisitionHdrs", "PurchaseRequisitionDtls",
+                   "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping"}
+
+
+
+#---------------- columns that are not in crm: they exist on our table, a stage fix fills them, and they ----------------
+#---------------- must be copied stage -> table along with the crm columns (TABLES_COLUMNS only drives the crm read) -----
+DERIVED_COLUMNS = {
+    "BiStockDetail": ["item_id"],      # from item_code, see STAGE_FIXES
+}
 
 
 
@@ -34,8 +43,10 @@ SOURCE_FILTERS = {
     "ItemCategories": "[segment1] = 'Performance Chemicals'",
     # ~68k of 169k
     "BiPoDetails": "[inventory_item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
-    # no item id on the stock table, filter by item code. ~31% of each day. 2024 on = ~4M rows
-    "BiStockDetail": "[trans_date] >= '2024-01-01' AND [item_code] IN (SELECT i.item_code FROM [CRMPROD].[dbo].[ItemMasters] i JOIN [CRMPROD].[dbo].[ItemCategories] c ON c.item_id = i.item_id WHERE c.segment1 = 'Performance Chemicals')",
+    # ~225k of 324k
+    "ItemInventoryOrgMappings": "[item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
+    # no item id on the stock table, filter by item code. ~31% of each day. 2024 on = ~7.5M rows
+    "BiStockDetail":"[trans_date] >= '2024-01-01' AND [item_code] IN (SELECT i.item_code FROM [CRMPROD].[dbo].[ItemMasters] i JOIN [CRMPROD].[dbo].[ItemCategories] c ON c.item_id = i.item_id WHERE c.segment1 = 'Performance Chemicals')",
     "DispatchDetails": "[schedule_date] >= '2021-01-01' AND [item_segment] = 'Performance Chemicals'",
     # only the headers those details point at, so the fk always holds. ~253k of 1.4M
     "Dispatches": "[header_id] IN (SELECT header_id FROM [CRMPROD].[dbo].[DispatchDetails] WHERE [schedule_date] >= '2021-01-01' AND [item_segment] = 'Performance Chemicals')",
@@ -125,12 +136,19 @@ STAGE_FIXES = {
     "BiStockDetail": [
         # warehouse not in the master -> unknown. 100% match today, safety net
         '''UPDATE stage SET inventory_org_id = -1
-            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgLocations" w WHERE w.inventory_org_id = stage.inventory_org_id)''',
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.inventory_org_id)''',
+        # crm gives no item id here, only the code. item_code is not unique in ItemMasters (3 codes with two ids,
+        # none of them ever in stock) so take the latest id per code. every code in stock matches today
+        '''UPDATE stage SET item_id = i.item_id
+            FROM (SELECT DISTINCT ON (item_code) item_code, item_id
+                    FROM "ItemMasters" ORDER BY item_code, item_id DESC) i
+            WHERE i.item_code = stage.item_code''',
+        "UPDATE stage SET item_id = -1 WHERE item_id IS NULL",
     ],
-    "InventoryOrgLocations": [
-        # one row has no org id, one org id (1666) appears twice. children need it unique
-        "DELETE FROM stage WHERE inventory_org_id IS NULL",
-        "DELETE FROM stage a USING stage b WHERE a.inventory_org_id = b.inventory_org_id AND a.header_id > b.header_id",
+    "InventoryOrgs": [
+        # home collector is 0 / empty on 83 warehouses, that is a real state -> null (the full mapping is BiCollectorInventoryOrgMapping)
+        '''UPDATE stage SET collector_id = NULL
+            WHERE NOT EXISTS (SELECT 1 FROM "Collectors" c WHERE c.collector_id = stage.collector_id)''',
     ],
     "PurchaseRequisitionHdrs": [
         # 178 unfinished drafts carry supplier 0 -> null
@@ -139,6 +157,11 @@ STAGE_FIXES = {
         # 48% carry collector 0 (raised centrally) -> null, that is a real state not a missing parent
         '''UPDATE stage SET collector_id = NULL
             WHERE NOT EXISTS (SELECT 1 FROM "Collectors" c WHERE c.collector_id = stage.collector_id)''',
+        # both warehouses match today, safety net
+        '''UPDATE stage SET ship_to_inv_org_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.ship_to_inv_org_id)''',
+        '''UPDATE stage SET bill_to_inv_org_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.bill_to_inv_org_id)''',
     ],
     "QuotationHdrs": [
         # crm leaves 0 on a few hundred rows -> unknown customer / site
@@ -167,6 +190,9 @@ STAGE_FIXES = {
         # header not loaded (created between the two snapshots). blank it, next run fixes it
         '''UPDATE stage SET header_id = NULL
             WHERE NOT EXISTS (SELECT 1 FROM "QuotationHdrs" h WHERE h.header_id = stage.header_id)''',
+        # warehouse matches today, safety net
+        '''UPDATE stage SET inventory_org_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.inventory_org_id)''',
     ],
 
     "SaleOrderHdrs": [
@@ -182,6 +208,9 @@ STAGE_FIXES = {
         # 542 lines carry delivery point 0 -> unknown
         '''UPDATE stage SET delivery_from_id = -1
             WHERE NOT EXISTS (SELECT 1 FROM "DeliveryFroms" f WHERE f.line_id = stage.delivery_from_id)''',
+        # 4,591 lines carry warehouse 0 -> unknown
+        '''UPDATE stage SET inventory_org_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.inventory_org_id)''',
     ],
 
     "SocPendingDetails": [
@@ -201,6 +230,9 @@ STAGE_FIXES = {
             WHERE NOT EXISTS (SELECT 1 FROM "CustomerSites" s WHERE s.site_use_id = stage.ship_to_customer_site_id)''',
         '''UPDATE stage SET bill_to_customer_site_id = -1
             WHERE NOT EXISTS (SELECT 1 FROM "CustomerSites" s WHERE s.site_use_id = stage.bill_to_customer_site_id)''',
+        # warehouse matches today, safety net
+        '''UPDATE stage SET inventory_org_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.inventory_org_id)''',
     ],
 
     "DispatchDetails": [
@@ -211,15 +243,55 @@ STAGE_FIXES = {
             WHERE NOT EXISTS (SELECT 1 FROM "Dispatches" d WHERE d.header_id = stage.header_id)''',
         '''UPDATE stage SET schedule_line_id = NULL
             WHERE NOT EXISTS (SELECT 1 FROM "Schedules" s WHERE s.line_id = stage.schedule_line_id)''',
-    ]
+        # warehouse matches today, safety net
+        '''UPDATE stage SET inventory_org_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.inventory_org_id)''',
+    ],
+
+    # warehouse matches on every row today. safety net so the fk never breaks a load
+    "Dispatches": [
+        '''UPDATE stage SET inventory_org_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.inventory_org_id)''',
+    ],
+    "SocCancelDetails": [
+        '''UPDATE stage SET inventory_org_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.inventory_org_id)''',
+    ],
+    "BiPoDetails": [
+        '''UPDATE stage SET inv_org_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.inv_org_id)''',
+    ],
+    "ItemInventoryOrgMappings": [
+        # one item (509454) is mapped twice at two warehouses, identical rows. keep the earlier one so (item, warehouse) stays unique
+        "DELETE FROM stage a USING stage b WHERE a.item_id = b.item_id AND a.inventory_org_id = b.inventory_org_id AND a.header_id > b.header_id",
+        # both match 100% today, safety net
+        '''UPDATE stage SET item_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "ItemMasters" i WHERE i.item_id = stage.item_id)''',
+        '''UPDATE stage SET inventory_org_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.inventory_org_id)''',
+    ],
+    "BiCollectorInventoryOrgMapping": [
+        # crm re-inserts a (collector, warehouse) pair with a new startdate instead of editing it, and never closes the old row.
+        # 67 pairs sit there 2-3 times. keep the original (lowest header_id) so the pair is unique
+        "DELETE FROM stage a USING stage b WHERE a.collector_id = b.collector_id AND a.inventory_org_id = b.inventory_org_id AND a.header_id > b.header_id",
+        # both match 100% today. a mapping to a branch / warehouse we don't have is worthless, drop it (Collectors has no -1 row)
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Collectors" c WHERE c.collector_id = stage.collector_id)''',
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.inventory_org_id)''',
+    ],
 }
 
 
 #------------------------------------- Catch-all parent rows -------------------------------------
 SEED_ROWS = {
-    "InventoryOrgLocations": '''INSERT INTO "InventoryOrgLocations" (header_id, inventory_org_id, inventory_org_code)
-                          VALUES (-1, -1, 'unknown')
-                          ON CONFLICT (header_id) DO NOTHING''',
+    "InventoryOrgs":   '''INSERT INTO "InventoryOrgs" (inventory_org_id, inventory_org_code, inventory_org_name, is_active)
+                          VALUES (-1, 'unknown', 'unknown', false)
+                          ON CONFLICT (inventory_org_id) DO NOTHING''',
+    # for BiStockDetail.item_id when a stock code has no master row (none today)
+    "ItemMasters":     '''INSERT INTO "ItemMasters" (item_id, item_code, item_description, status)
+                          VALUES (-1, 'unknown', 'unknown', 'Inactive')
+                          ON CONFLICT (item_id) DO NOTHING''',
     "JourneyCalendars": '''INSERT INTO "JourneyCalendars" (line_id, name, acc_year, effective_from, effective_to, is_active, is_closed)
                           VALUES (-1, 'unknown', 'unknown', '1900-01-01', '1900-01-01', false, false)
                           ON CONFLICT (line_id) DO NOTHING''',
@@ -249,8 +321,9 @@ PARENT_CHECK = {
     "SaleOrderHdrs":     [("customer_id",     "CustomerMasters", "customer_id"),
                           ("ship_to_site_id", "CustomerSites",   "site_use_id"),
                           ("bill_to_site_id", "CustomerSites",   "site_use_id")],
-    "SaleOrderDtls":     [("header_id",        "SaleOrderHdrs", "header_id"),
-                          ("delivery_from_id", "DeliveryFroms", "line_id")],
+    "SaleOrderDtls":     [("header_id",        "SaleOrderHdrs",         "header_id"),
+                          ("delivery_from_id", "DeliveryFroms",         "line_id"),
+                          ("inventory_org_id", "InventoryOrgs", "inventory_org_id")],
     "SocPendingDetails": [("order_no",  "SaleOrderHdrs",   "header_id")],
 
 #-------------------------------------------- customer_master -----------------------------------------------------
@@ -261,16 +334,26 @@ PARENT_CHECK = {
                         ("customer_id",              "CustomerMasters", "customer_id"),
                         ("collector_id",             "Collectors",      "collector_id"),
                         ("ship_to_customer_site_id", "CustomerSites",   "site_use_id"),
-                        ("bill_to_customer_site_id", "CustomerSites",   "site_use_id")],
+                        ("bill_to_customer_site_id", "CustomerSites",   "site_use_id"),
+                        ("inventory_org_id",         "InventoryOrgs", "inventory_org_id")],
     "SocCancelDetails": [("sale_order_detail_line_id", "SaleOrderDtls",   "line_id"),
                          ("sale_order_header_id",      "SaleOrderHdrs",   "header_id"),
                          ("item_id",                   "ItemMasters",     "item_id"),
-                         ("customer_id",               "CustomerMasters", "customer_id")],
-    "BiPoDetails":     [("inventory_item_id", "ItemMasters", "item_id"),
-                        ("vendor_id",         "ApSuppliers", "vendor_id")],
-    "BiStockDetail":   [("inventory_org_id", "InventoryOrgLocations", "inventory_org_id")],
-    "PurchaseRequisitionHdrs": [("collector_id", "Collectors",  "collector_id"),
-                                ("supplier_id",  "ApSuppliers", "vendor_id")],
+                         ("customer_id",               "CustomerMasters", "customer_id"),
+                         ("inventory_org_id",          "InventoryOrgs", "inventory_org_id")],
+    "BiPoDetails":     [("inventory_item_id", "ItemMasters",           "item_id"),
+                        ("vendor_id",         "ApSuppliers",           "vendor_id"),
+                        ("inv_org_id",        "InventoryOrgs", "inventory_org_id")],
+    "InventoryOrgs":   [("collector_id",     "Collectors",    "collector_id")],
+    "BiStockDetail":   [("inventory_org_id", "InventoryOrgs", "inventory_org_id")],
+    "ItemInventoryOrgMappings": [("item_id",          "ItemMasters",   "item_id"),
+                                 ("inventory_org_id", "InventoryOrgs", "inventory_org_id")],
+    "BiCollectorInventoryOrgMapping": [("collector_id",     "Collectors",    "collector_id"),
+                                       ("inventory_org_id", "InventoryOrgs", "inventory_org_id")],
+    "PurchaseRequisitionHdrs": [("collector_id",       "Collectors",            "collector_id"),
+                                ("supplier_id",        "ApSuppliers",           "vendor_id"),
+                                ("ship_to_inv_org_id", "InventoryOrgs", "inventory_org_id"),
+                                ("bill_to_inv_org_id", "InventoryOrgs", "inventory_org_id")],
     "PurchaseRequisitionDtls": [("header_id",      "PurchaseRequisitionHdrs", "header_id"),
                                 ("item_id",        "ItemMasters",             "item_id"),
                                 ("customerid",     "CustomerMasters",         "customer_id"),
@@ -280,7 +363,8 @@ PARENT_CHECK = {
                         ("item_id",                   "ItemMasters",     "item_id"),
                         ("customer_id",               "CustomerMasters", "customer_id"),
                         ("ship_to_customer_site_id",  "CustomerSites",   "site_use_id"),
-                        ("bill_to_customer_site_id",  "CustomerSites",   "site_use_id")],
+                        ("bill_to_customer_site_id",  "CustomerSites",   "site_use_id"),
+                        ("inventory_org_id",          "InventoryOrgs", "inventory_org_id")],
 
 #-------------------------------------------- quotation_master -----------------------------------------------------
     "SCBusinessMonthlyPlanHdrs": [("customer_id",     "CustomerMasters", "customer_id"),
@@ -295,22 +379,25 @@ PARENT_CHECK = {
                         ("customer_id",     "CustomerMasters", "customer_id"),
                         ("ship_to_site_id", "CustomerSites",   "site_use_id"),
                         ("bill_to_site_id", "CustomerSites",   "site_use_id")],
-    "QuotationDtls":   [("header_id",        "QuotationHdrs", "header_id"),
-                        ("item_id",          "ItemMasters",   "item_id"),
-                        ("delivery_from_id", "DeliveryFroms", "line_id")],
-    "DispatchDetails": [("sale_order_detail_line_id", "SaleOrderDtls", "line_id"),
-                        ("sale_order_header_id",      "SaleOrderHdrs", "header_id"),
-                        ("item_id",                   "ItemMasters",   "item_id")],
+    "QuotationDtls":   [("header_id",        "QuotationHdrs",         "header_id"),
+                        ("item_id",          "ItemMasters",           "item_id"),
+                        ("delivery_from_id", "DeliveryFroms",         "line_id"),
+                        ("inventory_org_id", "InventoryOrgs", "inventory_org_id")],
+    "DispatchDetails": [("sale_order_detail_line_id", "SaleOrderDtls",         "line_id"),
+                        ("sale_order_header_id",      "SaleOrderHdrs",         "header_id"),
+                        ("item_id",                   "ItemMasters",           "item_id"),
+                        ("inventory_org_id",          "InventoryOrgs", "inventory_org_id")],
 }
 
 
 #---------------------------- Parent tables must load before child tables -------------------------------------
 LOAD_LEVELS = [
-    ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms", "QuotationStatus", "JourneyCalendars", "ApSuppliers",
-     "InventoryOrgLocations"],                                                                                # no parents
-    ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "BiPoDetails", "PurchaseRequisitionHdrs"],   # need level 0
-    ["CustomerSites", "PurchaseRequisitionDtls", "BiStockDetail"],       # need CustomerMasters + MarketCircles / PurchaseRequisitionHdrs / InventoryOrgLocations. BiStockDetail is large: 4 inner workers
-    ["SaleOrderHdrs", "QuotationHdrs", "SCBusinessMonthlyPlanHdrs"],     # need Collectors, CustomerMasters, CustomerSites (+ MarketCircles, QuotationStatus)
+    ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms",
+     "QuotationStatus", "JourneyCalendars", "ApSuppliers"],              # no parents
+    ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "InventoryOrgs"],   # need level 0 (InventoryOrgs -> Collectors)
+    ["CustomerSites", "BiPoDetails", "PurchaseRequisitionHdrs", "BiStockDetail",
+     "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping"],      # need MarketCircles / InventoryOrgs. BiStockDetail is large: 4 inner workers
+    ["SaleOrderHdrs", "QuotationHdrs", "SCBusinessMonthlyPlanHdrs", "PurchaseRequisitionDtls"],   # need Collectors, CustomerMasters, CustomerSites (+ MarketCircles, QuotationStatus) / PurchaseRequisitionHdrs
     ["SaleOrderDtls", "SocPendingDetails", "Dispatches", "QuotationDtls", "SCBusinessMonthlyPlanDtls"],   # need the level 3 headers (+ ItemMasters / MarketCircles / sites)
     ["Schedules", "SocCancelDetails", "SCBusinessMonthlyPlanJCDtls"],    # level 5, need SaleOrderDtls / SCBusinessMonthlyPlanDtls
     ["DispatchDetails"],                                                 # level 6, needs Schedules + Dispatches
