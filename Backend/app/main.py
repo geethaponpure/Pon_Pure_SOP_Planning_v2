@@ -11,6 +11,7 @@ from .models.purchase_master import ApSuppliers, BiPoDetails, PurchaseRequisitio
 from .models.inventory_master import BiStockDetail, InventoryOrgs, ItemInventoryOrgMappings, BiCollectorInventoryOrgMapping
 from .models.user_and_scope import (Users, Roles, UserRoles, UserMarketCircleMappings, UserCollectorMappings,
                                     UserCustomerMappings, CollectorMailMappings, TechnicalUserSegmentMappings)
+from .repositories.views import create_views
 from contextlib import asynccontextmanager
 from .core.config import settings
 from sqlalchemy import text
@@ -29,6 +30,8 @@ async def lifespan(app:FastAPI):
         await conn.execute(text(f'SET search_path TO "{settings.POSTGRES_SCHEMA}"'))
 
         await conn.run_sync(Base.metadata.create_all)
+
+        await create_views(conn)
 
     yield
 

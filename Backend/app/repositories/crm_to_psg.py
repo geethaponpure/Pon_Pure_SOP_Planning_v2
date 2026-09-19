@@ -8,7 +8,7 @@ from app.core.database import get_postgres_cursor, get_sql_server_cursor
 from app.schemas.tables_schemas import TABLES_COLUMNS
 from app.core.constants import SQL_TO_PG_TYPES, CRM_TABLES
 from app.core.config import settings
-from app.etl.extract.utils import (SOURCE_FILTERS, SEED_ROWS, STAGE_FIXES, LOAD_LEVELS,
+from app.repositories.utils import (SOURCE_FILTERS, SEED_ROWS, STAGE_FIXES, LOAD_LEVELS,
                                    SNAPSHOT_TABLES, UPSERT_TABLES, PARENT_CHECK,
                                    LARGE_TABLES, RANGE_ROWS, INNER_WORKERS, DERIVED_COLUMNS)
 

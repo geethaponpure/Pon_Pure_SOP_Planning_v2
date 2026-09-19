@@ -9,7 +9,9 @@ Two kinds:
 - **dim / fact views** - one clean row per thing, ready to join: `dim_customer_site`, `dim_item`, `fact_dispatch` ..
 - **fixes** - things we chose not to do at load time because they change meaning or would break a foreign key.
 
-Status: nothing built yet. This is the list of what each table needs.
+Built views are documented in `views_applied.md` (what each view is, columns, rules, diagrams). This file is only the to-do list.
+
+Status: item_master done. Next: customer_master.
 
 ## customer_master
 
@@ -20,13 +22,7 @@ Status: nothing built yet. This is the list of what each table needs.
 | CustomerMasters | status filter: `status = 'A'` vs `status <> 'I'` - 14% are null or blank. pick one, document it | either is defensible, the load must not decide |
 | CustomerSites | `mc_code = 'unknown'` rows (2,047): show as an "unknown circle" bucket or exclude per report | visible bucket was the choice, reports decide |
 
-## item_master
-
-| Table | What the view has to do | Why not at load |
-| --- | --- | --- |
-| ItemMasters | `dim_item`: item + its category segments (1:1 with ItemCategories) + current PTO / PTS flag | segments and pto/pts sit in two other tables |
-| PurchaseRequisitionPtoPts | latest classification per item: `max(FromDate)` row, ~30 rows per item otherwise | it is month wise history, the tool wants "is it PTO today" |
-| ItemMasters | `status` is `Active` / `Inactive` (full word), customers use `A` / `I` - normalise in the dim | crm inconsistency, not ours to change in the mirror |
+## item_master - built, see `views_applied.md`
 
 ## sales_order_soc
 

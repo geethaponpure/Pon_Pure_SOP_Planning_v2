@@ -59,6 +59,12 @@ The relationships represent:
 - One `ItemMasters` record can have many `PurchaseRequisitionPtoPts` records.
 - `ItemMasters` is the parent table for both tables.
 
+Things to know:
+
+- `ItemCategories` holds Performance Chemicals products only (15.6k of 26k). Orders are placed on the other products too, so a product without a category row is a real, non PC product - not a missing row.
+- crm's own "usable product" test is `status = 'Active'` **and** `enabled_flag = 'Y'` (119 products are disabled while still active).
+- `PurchaseRequisitionPtoPts` is written on the 1st of every month by `SpSyncPoRequisitionPtoPts` from the trailing 6 months of invoice lines (`PureGPReports`, not loaded): fewer than 5 customers, or one customer with 70%+ of the quantity (80% before Jul 2023) → PTO, otherwise PTS. `types` says which pass a row is from - the product's own sales (`PTO` / `PTS` / `PTS70%`) or the raw material pass (`RPTO` / `RPTS` / `RPTS70%`), so one item can have two rows a month. A product with no sales in the window has no row; crm's screen (`fn_GetPTOPTSItemsPC`) then shows PTO. May 2022 is missing, Dec 2025 has no raw material rows. `dim_item` mirrors the screen and also exposes the last measured class.
+
 ---
 
 ## CRM Sales_Order_SOC Data Model

@@ -19,6 +19,7 @@ class ItemMasters(Base):
     uom = Column(Text)
     uom_description = Column(Text)
     status = Column(Text)                                 # Active / Inactive
+    enabled_flag = Column(Text)                           # Y / N (119 N). crm treats "active" as status = Active AND enabled_flag = Y
     creation_date = Column(DateTime)
     last_update_date = Column(DateTime)
 
@@ -53,12 +54,13 @@ class PurchaseRequisitionPtoPts(Base):
     header_id = Column(BigInteger, primary_key=True, autoincrement=False)
     itemid = Column(BigInteger, ForeignKey("ItemMasters.item_id"), nullable=False, index=True)
     itemcode = Column(Text, nullable=False)               # copy of ItemMasters.item_code, always same
-    customercount = Column(BigInteger, nullable=False)
-    overallsaleqty = Column(Double, nullable=False)
-    customersaleqty = Column(Double, nullable=False)
-    salepercentage = Column(Double, nullable=False)
-    actiontypes = Column(Text, nullable=False)            # PTO / PTS
-    fromdate = Column(Date, nullable=False, index=True)   # month start, ~30 rows per item from jul 2020
+    customercount = Column(BigInteger, nullable=False)    # distinct customers in the trailing 6 months of invoices
+    overallsaleqty = Column(Double, nullable=False)       # qty sold in that window
+    customersaleqty = Column(Double, nullable=False)      # qty taken by the single largest customer
+    salepercentage = Column(Double, nullable=False)       # that customer's share, percent
+    actiontypes = Column(Text, nullable=False)            # PTO / PTS. the class: < 5 customers or top share >= 70% -> PTO, else PTS
+    types = Column(Text)                                  # PTO / PTS / PTS70% / PTS80% = finished goods pass, RPTO / RPTS / RPTS70% / RPTS80% = raw material pass. the % tags the threshold (80 before jul 2023)
+    fromdate = Column(Date, nullable=False, index=True)   # month start, ~30 rows per item from jul 2020. may 2022 is missing in crm
     todate = Column(Date, nullable=False)                 # month end
 
     item = relationship("ItemMasters", back_populates="pto_pts")

@@ -13,6 +13,7 @@ TABLES_COLUMNS = {
         "uom",                  # KG, LTR etc
         "uom_description",
         "status",               # Active / Inactive (full word, not A / I like customers)
+        "enabled_flag",         # Y / N, 119 N. crm's own "active" test is status = Active AND enabled_flag = Y (fn_GetPTOPTSItemsPC)
         "creation_date",
         "last_update_date",
     ],
@@ -29,16 +30,17 @@ TABLES_COLUMNS = {
         "last_update_date",
     ],
 
-    "PurchaseRequisitionPtoPts": [
+    "PurchaseRequisitionPtoPts": [   # written monthly by SpSyncPoRequisitionPtoPts from the trailing 6 months of invoices (PureGPReports, not loaded)
         "Header_id",            # pk
-        "itemid",               # -> ItemMasters.item_id, all match
+        "itemid",               # -> ItemMasters.item_id, all match. a finished good, or a raw material on the raw material pass
         "itemcode",             # same as ItemMasters.item_code, just a copy
-        "customercount",        # how many customers bought it in the month
-        "OverAllSaleQty",       # total qty sold in the month
-        "CustomerSaleQty",      # qty sold to the top customers
-        "SalePercentage",       # CustomerSaleQty / OverAllSaleQty
-        "Actiontypes",          # PTO / PTS
-        "FromDate",             # month start, ~30 rows per item from jul 2020
+        "customercount",        # distinct customers in the 6 month window
+        "OverAllSaleQty",       # qty sold in the window
+        "CustomerSaleQty",      # qty taken by the single largest customer
+        "SalePercentage",       # that customer's share, percent
+        "Actiontypes",          # the class: PTO when < 5 customers or top share >= 70% (80% before jul 2023), else PTS
+        "types",                # which pass and which threshold: PTO / PTS / PTS70% / PTS80% = finished goods, RPTO / RPTS / RPTS70% / RPTS80% = raw material
+        "FromDate",             # month start. one row per item per pass per month from jul 2020. may 2022 missing, dec 2025 has no raw material rows
         "Todate",               # month end
     ]
 },
