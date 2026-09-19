@@ -9,7 +9,8 @@
 #---------------- every run and merged on the pk. never truncated, everything else points at these -----------------------
 UPSERT_TABLES = {"Collectors", "MarketCircles", "CustomerMasters", "CustomerSites",
                  "ItemMasters", "ItemCategories", "DeliveryFroms", "QuotationStatus", 
-                 "JourneyCalendars", "ApSuppliers", "InventoryOrgs"}
+                 "JourneyCalendars", "ApSuppliers", "InventoryOrgs",
+                 "Users", "Roles"}
 
 
 
@@ -26,7 +27,9 @@ SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules",
                    "DispatchDetails", "QuotationHdrs", "QuotationDtls",
                    "SCBusinessMonthlyPlanHdrs", "SCBusinessMonthlyPlanDtls", "SCBusinessMonthlyPlanJCDtls",
                    "BiPoDetails", "PurchaseRequisitionHdrs", "PurchaseRequisitionDtls",
-                   "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping"}
+                   "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping",
+                   "UserRoles", "UserMarketCircleMappings", "UserCollectorMappings",
+                   "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings"}
 
 
 
@@ -69,6 +72,73 @@ STAGE_FIXES = {
         # 0 means no oracle account. null it so UNIQUE holds
         "UPDATE stage SET customer_id = NULL WHERE customer_id = 0",
         "UPDATE stage SET customer_number = NULL WHERE customer_number = 0",
+    ],
+
+#-------------------------------------------- user_and_scope -----------------------------------------------------
+    "Users": [
+        # the manager is a self link. 368 rows carry 0 or a user crm has deleted -> null.
+        # checked against stage, not the table: upsert reads all users every run so the batch is complete
+        '''UPDATE stage SET reporting_to_id = NULL
+            WHERE reporting_to_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM stage s WHERE s.line_id = stage.reporting_to_id)''',
+    ],
+    "UserRoles": [
+        # a role row for a user or role we don't have means nothing, drop it (both match 100% today)
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.user_id)''',
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Roles" r WHERE r.line_id = stage.role_id)''',
+        # one role per user is true today. if crm ever adds a second, keep the latest assignment so UNIQUE(user_id) holds
+        "DELETE FROM stage a USING stage b WHERE a.user_id = b.user_id AND a.line_id < b.line_id",
+    ],
+    "UserMarketCircleMappings": [
+        # no dedupe here: a user re-assigned to the same circle gets a new row with new dates, that is history we want.
+        # a mapping to a user / circle we don't have means nothing, drop it (both match 100% today)
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.user_id)''',
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "MarketCircles" m WHERE m.header_id = stage.market_circle_id)''',
+    ],
+    "UserCollectorMappings": [
+        # crm holds the same (user, branch) pair up to 48 times, inserted in the same second. keep the first so the pair is unique
+        "DELETE FROM stage a USING stage b WHERE a.user_id = b.user_id AND a.collector_id = b.collector_id AND a.header_id > b.header_id",
+        # a mapping to a user / branch we don't have means nothing, drop it (both match 100% today)
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.user_id)''',
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Collectors" c WHERE c.collector_id = stage.collector_id)''',
+    ],
+    "UserCustomerMappings": [
+        # 228 (user, customer) pairs sit there 2-3 times, all open, just re-inserted on a later date. keep the first so the pair is unique
+        "DELETE FROM stage a USING stage b WHERE a.user_id = b.user_id AND a.customer_hdr_id = b.customer_hdr_id AND a.header_id > b.header_id",
+        # 120 rows belong to 2 users crm has deleted, 4 rows have no customer (hdr 0). a mapping with one end missing means nothing
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.user_id)''',
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "CustomerMasters" c WHERE c.header_id = stage.customer_hdr_id)''',
+    ],
+    "CollectorMailMappings": [
+        # one row per branch. no duplicates today, safety net for the unique
+        "DELETE FROM stage a USING stage b WHERE a.collector_id = b.collector_id AND a.header_id > b.header_id",
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Collectors" c WHERE c.collector_id = stage.collector_id)''',
+        # the six chain columns are optional: a person crm no longer has -> nobody assigned. all match today
+        '''UPDATE stage SET bm_user_id = NULL WHERE bm_user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.bm_user_id)''',
+        '''UPDATE stage SET rm_user_id = NULL WHERE rm_user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.rm_user_id)''',
+        '''UPDATE stage SET cm_user_id = NULL WHERE cm_user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.cm_user_id)''',
+        '''UPDATE stage SET bc_user_id = NULL WHERE bc_user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.bc_user_id)''',
+        '''UPDATE stage SET ed_user_id = NULL WHERE ed_user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.ed_user_id)''',
+        '''UPDATE stage SET gm_user_id = NULL WHERE gm_user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.gm_user_id)''',
+    ],
+    "TechnicalUserSegmentMappings": [
+        # a row for a user / role we don't have means nothing, drop it (both match 100% today)
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.user_id)''',
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Roles" r WHERE r.line_id = stage.role_id)''',
+        # the reporting line is optional
+        '''UPDATE stage SET reporting_user_id = NULL
+            WHERE reporting_user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.reporting_user_id)''',
     ],
 
     "MarketCircles": [
@@ -317,6 +387,26 @@ SEED_ROWS = {
 #-------------- Hold rows whose parent is newer than the current PostgreSQL parent data; retry them on the next sync ---------------------------
 PARENT_CHECK = {
 
+#-------------------------------------------- user_and_scope -----------------------------------------------------
+    "UserRoles":         [("user_id", "Users", "line_id"),
+                          ("role_id", "Roles", "line_id")],
+    "UserMarketCircleMappings": [("user_id",          "Users",         "line_id"),
+                                 ("market_circle_id", "MarketCircles", "header_id")],
+    "UserCollectorMappings":    [("user_id",      "Users",      "line_id"),
+                                 ("collector_id", "Collectors", "collector_id")],
+    "UserCustomerMappings":     [("user_id",         "Users",           "line_id"),
+                                 ("customer_hdr_id", "CustomerMasters", "header_id")],
+    "CollectorMailMappings":    [("collector_id", "Collectors", "collector_id"),
+                                 ("bm_user_id",   "Users",      "line_id"),
+                                 ("rm_user_id",   "Users",      "line_id"),
+                                 ("cm_user_id",   "Users",      "line_id"),
+                                 ("bc_user_id",   "Users",      "line_id"),
+                                 ("ed_user_id",   "Users",      "line_id"),
+                                 ("gm_user_id",   "Users",      "line_id")],
+    "TechnicalUserSegmentMappings": [("user_id",           "Users", "line_id"),
+                                     ("reporting_user_id", "Users", "line_id"),
+                                     ("role_id",           "Roles", "line_id")],
+
 #-------------------------------------------- sales_order_soc -----------------------------------------------------
     "SaleOrderHdrs":     [("customer_id",     "CustomerMasters", "customer_id"),
                           ("ship_to_site_id", "CustomerSites",   "site_use_id"),
@@ -393,10 +483,11 @@ PARENT_CHECK = {
 #---------------------------- Parent tables must load before child tables -------------------------------------
 LOAD_LEVELS = [
     ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms",
-     "QuotationStatus", "JourneyCalendars", "ApSuppliers"],              # no parents
-    ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "InventoryOrgs"],   # need level 0 (InventoryOrgs -> Collectors)
+     "QuotationStatus", "JourneyCalendars", "ApSuppliers", "Users", "Roles"],   # no parents (Users only points at itself)
+    ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "InventoryOrgs",
+     "UserRoles", "UserCollectorMappings", "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings"],   # need level 0 (InventoryOrgs -> Collectors, the user mappings -> Users / Roles / Collectors / CustomerMasters)
     ["CustomerSites", "BiPoDetails", "PurchaseRequisitionHdrs", "BiStockDetail",
-     "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping"],      # need MarketCircles / InventoryOrgs. BiStockDetail is large: 4 inner workers
+     "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping", "UserMarketCircleMappings"],   # need MarketCircles / InventoryOrgs. BiStockDetail is large: 4 inner workers
     ["SaleOrderHdrs", "QuotationHdrs", "SCBusinessMonthlyPlanHdrs", "PurchaseRequisitionDtls"],   # need Collectors, CustomerMasters, CustomerSites (+ MarketCircles, QuotationStatus) / PurchaseRequisitionHdrs
     ["SaleOrderDtls", "SocPendingDetails", "Dispatches", "QuotationDtls", "SCBusinessMonthlyPlanDtls"],   # need the level 3 headers (+ ItemMasters / MarketCircles / sites)
     ["Schedules", "SocCancelDetails", "SCBusinessMonthlyPlanJCDtls"],    # level 5, need SaleOrderDtls / SCBusinessMonthlyPlanDtls

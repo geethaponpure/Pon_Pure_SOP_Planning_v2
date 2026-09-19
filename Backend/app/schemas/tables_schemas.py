@@ -678,4 +678,116 @@ TABLES_COLUMNS = {
     ],
 },
 
+
+#-------------------------------------------- Users, roles & data-scope mappings --------------------------------------------
+"user_and_scope" : {
+    "Users": [                    # everyone with a crm login, 1,370 rows. upsert, level 0
+        "line_id",                # pk. deleted users leave gaps, we keep our copy for history
+        "name",                   # always filled. first / last name are null on 70%, not taken
+        "username",               # the login. unique but for one dummy (DUMBMMAR twice, one active one not)
+        "email",                  # filled on 952, a few shared mailboxes
+        "user_code",              # employee code. not unique, 260 rows share one
+        "designation",            # Executive / Manager .. null on 381
+        "department",             # Sales / Warehouse / Accounts .. null on 376
+        "reporting_to_id",        # -> Users.line_id, the manager. 0 / gone -> null
+        "is_active",              # 1,217 active
+        "is_dummy",               # 163 placeholder users (DUMMY_EX_..). null = real user
+        "is_international",       # 17
+        "last_logged_in_date",    # null on 806. who actually uses crm
+        "creation_date",          # null on 34
+        "last_update_date",
+        # never loaded: password, current_password, otp_number, OTP, daily_OTP, push_token_key and their expiry dates, mobile_number
+        # skipped: collector_id (0 on every row), crm_userid / crm_usercode (empty on 1,020), division_id / pm_division / user_groups (codes, no master),
+        #          user_location (76% null), first / middle / last_name, previous_logged_in_date, last_lnactive_date, log_count, policy exception flags
+    ],
+
+    "Roles": [                    # job roles, 108 rows. upsert, level 0
+        "line_id",                # pk
+        "name",                   # Sales Executive / Technical Executive / Branch Manager .. unique
+        "is_prime",               # 64
+        "is_active",              # all 108
+        "is_deleted",             # 1 (SS Quote), still on 7 users. loaded, not filtered
+        "role_type_id",           # 20 values, no master in crm
+        "creation_date",
+        "last_update_date",
+        # skipped: description / identifier (null on all), RoleHierarchy_line_id (never used), created_by / last_updated_by
+    ],
+
+    "UserRoles": [                # one role per user, 1,365 rows. rows get deleted, so snapshot. level 1
+        "line_id",                # pk
+        "user_id",                # -> Users.line_id, unique. row dropped if the user is gone
+        "role_id",                # -> Roles.line_id. row dropped if the role is gone
+        "is_sap_data",            # 330 true, the role came from the sap sync
+        "creation_date",
+        "last_update_date",       # 110 role changes on record
+    ],
+
+    "UserMarketCircleMappings": [ # a sales executive's territory, 273 rows / 260 users, with validity periods. rows get deleted, so snapshot. level 2
+        "header_id",              # pk
+        "user_id",                # -> Users.line_id, 100%. 241 of 260 are Sales Executives
+        "market_circle_id",       # -> MarketCircles.header_id, 100%
+        "valid_from",             # always filled
+        "valid_to",               # null = current (237). re-assignment to the same circle = new row, old one closed. history kept, "current" is a view rule
+        "is_primary",             # 245 true
+        "creation_date",          # null on 145
+        "last_update_date",
+        # skipped: cross_marketcircle_segmentaccess_flag (false on all), created_by / last_updated_by
+    ],
+
+    "UserCollectorMappings": [    # which branches a back office user may see (coordinators, accounts, commercial). 9,046 rows / 202 users, avg 44 branches. snapshot, level 1
+        "header_id",              # pk
+        "user_id",                # -> Users.line_id, 100%
+        "collector_id",           # -> Collectors, 100%. the same pair sits in crm up to 48 times, copies dropped on stage
+        "creation_date",          # null on 2,190
+        "last_update_date",       # null on 1,689
+        # skipped: created_by / last_updated_by
+    ],
+
+    "UserCustomerMappings": [     # a technical executive's customer portfolio. 16,485 rows / 101 users, avg 163 customers. snapshot, level 1
+        "header_id",              # pk
+        "user_id",                # -> Users.line_id. 120 rows belong to 2 deleted users, dropped
+        "customer_hdr_id",        # -> CustomerMasters.header_id, the real link. 4 rows carry 0, dropped
+        "valid_from",             # always filled
+        "valid_to",               # null = current (all but 125). "current" is a view rule
+        "creation_date",
+        "last_update_date",       # null on 11,156
+        # skipped: customer_id (stale, disagrees with the master on 400 rows and 0 collides with leads), created_by / last_updated_by
+        # 228 (user, customer) pairs sit there 2-3 times, all open, re-inserted later: copies dropped on stage
+    ],
+
+    "CollectorMailMappings": [    # one row per branch with its management chain, 129 rows. snapshot, level 1
+        "header_id",              # pk
+        "collector_id",           # -> Collectors, unique, all 129
+        "bm_user_id",             # -> Users, branch manager. 70 filled
+        "rm_user_id",             # -> Users, regional manager. 84
+        "cm_user_id",             # -> Users. 94 filled, 22 people
+        "bc_user_id",             # -> Users. 104 filled, 8 people
+        "ed_user_id",             # -> Users, executive director. 95 filled, 2 people
+        "gm_user_id",             # -> Users. 76 filled, 11 people
+        "coordinator_user_id",    # text: a single user id (71) or a comma list (25). no fk, split in views
+        "division",               # '1' / '2', a few '0' / null. text in crm
+        "sp_workflow_req",        # 16 true
+        "CommitmentEnableFlag",   # 'Y' on 85
+        "CommitmentEffectiveDate",
+        "HoldRemovalWeekNo",      # 1 .. 4
+        # skipped: status (null on all), clr / cmcr / ptr / Rma group ids (mail groups), IsMRAlertEnable / IsGPAlertEnable,
+        #          creation_date / last_update_date (null on every row), created_by / last_updated_by
+    ],
+
+    "TechnicalUserSegmentMappings": [   # technical managers / heads -> item segments and branch lists. 328 rows / 72 users. snapshot, level 1
+        "line_id",                # pk
+        "segment2",               # ItemCategories.segment2, matches 100%. text, soft link
+        "segment3",               # ItemCategories.segment3, matches 100%
+        "segment4",               # ItemCategories.segment4, filled on 285, 283 match
+        "collector_id",           # text: a comma list of collectors (167), a single id (96), '0' (14) or null (51). no fk, split in views
+        "role_id",                # -> Roles: Technical Manager (278) / Technical Head (50)
+        "user_id",                # -> Users, 72 users, up to 35 rows each
+        "reporting_user_id",      # -> Users, 100% match
+        "valid_to",               # null = current (254). 6 exact duplicate rows exist, all expired, not deduped
+        "creation_date",          # null on 2
+        "last_update_date",       # null on 121
+        # skipped: segment1 (Performance Chemicals on every row), created_by / last_updated_by
+    ],
+},
+
 }

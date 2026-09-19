@@ -111,12 +111,12 @@ CRM_TABLES = {
         "UserRoles",                        
         "Roles",                            
         "UserMarketCircleMappings",
-        "UserCollectorMappings"         
+        "UserCollectorMappings",         
         "UserCustomerMappings",             
         "TechnicalUserSegmentMappings",     
         "CollectorMailMappings",            
-        "SpAlertSegmentWorkflowHdrs",       
-        "SpAlertSegmentWorkflowDtls",       
+        # "SpAlertSegmentWorkflowHdrs",       
+        # "SpAlertSegmentWorkflowDtls",       
     ],
 }
 

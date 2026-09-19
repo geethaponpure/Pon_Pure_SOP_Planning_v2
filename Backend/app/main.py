@@ -9,6 +9,8 @@ from .models.quotation_master import QuotationStatus, QuotationHdrs, QuotationDt
 from .models.business_plan import JourneyCalendars, SCBusinessMonthlyPlanHdrs, SCBusinessMonthlyPlanDtls, SCBusinessMonthlyPlanJCDtls
 from .models.purchase_master import ApSuppliers, BiPoDetails, PurchaseRequisitionHdrs, PurchaseRequisitionDtls
 from .models.inventory_master import BiStockDetail, InventoryOrgs, ItemInventoryOrgMappings, BiCollectorInventoryOrgMapping
+from .models.user_and_scope import (Users, Roles, UserRoles, UserMarketCircleMappings, UserCollectorMappings,
+                                    UserCustomerMappings, CollectorMailMappings, TechnicalUserSegmentMappings)
 from contextlib import asynccontextmanager
 from .core.config import settings
 from sqlalchemy import text

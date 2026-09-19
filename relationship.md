@@ -490,6 +490,122 @@ Things to know:
 
 ---
 
+## CRM User_and_Scope Data Model
+
+The CRM user / scope data model consists of these tables:
+
+- Users
+- Roles
+- UserRoles
+- UserMarketCircleMappings (a sales executive's territory, with history)
+- UserCollectorMappings (which branches a back office user may see)
+- UserCustomerMappings (a technical executive's customer portfolio)
+- CollectorMailMappings (one row per branch: its management chain)
+- TechnicalUserSegmentMappings (technical managers / heads -> item segments and branch lists)
+
+SpAlertSegmentWorkflowHdrs / Dtls (approval routing config) were looked at and left out: workflow, not scope, and their user / segment links are partly broken.
+
+The logical business relationship is:
+
+```text
+  ┌───────────────────────────┐
+  │           Roles           │   job roles, 108 rows: Sales Executive (256 users), Technical Executive (138),
+  │        pk: line_id        │   Branch Manager (79), Technical Manager (72) .. is_deleted on 1 (still used)
+  └─────────────▲─────────────┘
+                │ role_id  (N : 1)
+  ┌───────────────────────────┐
+  │         UserRoles         │   one row per user, exactly one role. 1,365 rows (5 users have none).
+  │        pk: line_id        │   is_sap_data = the role came from the sap sync (330)
+  │      unique: user_id      │
+  └─────────────┬─────────────┘
+                │ user_id  (1 : 1)
+                ▼
+  ┌───────────────────────────┐
+  │           Users           │   everyone with a crm login, 1,370 rows. 1,217 active, 163 dummies,
+  │        pk: line_id        │◄──┐ 548 logged in the last 90 days. username is the identity
+  │     index: username       │   │ (unique but for one dummy). reporting_to_id = the manager,
+  └──────▲─────────────▲──────┘───┘ a self link, 1,002 of 1,370
+         │ user_id      │ user_id
+         │              │
+  ┌──────┴────────────┐ └──────────────────────────┐
+  │ UserMarketCircle  │                  ┌─────────┴──────────────┐
+  │     Mappings      │                  │ UserCollectorMappings  │
+  │   pk: header_id   │                  │     pk: header_id      │
+  └──────┬────────────┘                  │ unique: user_id +      │
+         │ market_circle_id              │         collector_id   │
+         ▼                               └─────────┬──────────────┘
+  MarketCircles.header_id                          │ collector_id
+                                                   ▼
+  273 rows / 260 users, 241 of them            Collectors.collector_id
+  Sales Executives. valid_from / valid_to:
+  a re-assignment closes the old row and     9,046 rows in crm -> 8,668 pairs / 202 users,
+  opens a new one, so a (user, circle)       avg 44 branches each, 18 users on 100+ (= all).
+  pair can repeat - that is history, kept    back office roles: coordinators, accounts,
+                                             commercial managers. no dates, no history
+
+  ┌───────────────────────────┐   a technical executive's customer portfolio. 16,485 rows in crm
+  │   UserCustomerMappings    │   -> 16,025 pairs / 99 users, avg 163 customers, max 1,046.
+  │       pk: header_id       │   user_id -> Users, customer_hdr_id -> CustomerMasters.header_id
+  │ unique: user_id +         │   (crm's customer_id column is stale, not loaded).
+  │         customer_hdr_id   │   valid_to null = current (all but 125)
+  └───────────────────────────┘
+
+  ┌───────────────────────────┐   one row per branch, 129 = all collectors. the management chain
+  │   CollectorMailMappings   │   as six user ids: bm (branch manager, 70), rm (regional, 84), cm (94),
+  │       pk: header_id       │   bc (104), ed (95), gm (76) -> Users, null = nobody. 38 branches have
+  │   unique: collector_id    │   neither bm nor rm. coordinator_user_id is text (ids or a comma list)
+  └───────────────────────────┘
+
+  ┌───────────────────────────┐   technical managers (278 rows) / heads (50) -> item segments.
+  │ TechnicalUserSegmentMappi │   72 users, up to 35 rows each. segment2/3/4 are text and match
+  │       pk: line_id         │   ItemCategories (soft). collector_id is text: a comma list (167),
+  │                           │   one id (96), '0' (14) or null (51). user_id, reporting_user_id -> Users,
+  └───────────────────────────┘   role_id -> Roles. valid_to null = current (254)
+
+  ───►  enforced foreign key
+```
+
+The relationships represent:
+
+- Every user has exactly one role, so `UserRoles` is a 1:1 bridge; a view can put the role name straight on the user. The bridge is kept because crm stores it that way and roles do change (110 changes on record).
+- `Users.reporting_to_id` is the manager - a self reference. crm has 0 or a deleted user on 368 rows, those become null.
+- **Scope is not on `Users`.** `Users.collector_id` is 0 on every row. Which circle / branches / customers / item segments a user may see lives in four separate mapping tables, each for a different role group.
+- `UserMarketCircleMappings` is the Sales Executive's territory: 1 circle (max 3), `is_primary` on 245. It carries **history**: a re-assignment to the same circle closes the old row (`valid_to`) and opens a new one, so 7 (user, circle) pairs appear 2-3 times with chained periods. Nothing is deduped; "current" = `valid_to` null or in the future (237 rows), the 36 closed rows are past territories.
+- `UserCollectorMappings` is a permission list for back office roles, not a territory: 202 users, avg 44 branches each, 18 users mapped to 100+ branches. crm holds the same pair up to 48 times (inserted in the same second) - 378 copies dropped on stage, 8,668 pairs kept, `(user_id, collector_id)` unique. 1,027 active users have no row here, so it never answers "which branch is this user in".
+- `UserCustomerMappings` is the Technical Executive's portfolio (83 of 101 users are TEs). 228 (user, customer) pairs sit there 2-3 times, all open, just re-inserted on a later date - unlike the circle mappings these are copies, not history: 336 dropped on stage, `(user_id, customer_hdr_id)` unique. 120 rows belong to 2 users crm has deleted and 4 have no customer, dropped. crm's `customer_id` column disagrees with the customer master on 400 rows and its 0 collides with every lead, so it is not loaded; `customer_hdr_id` is the link.
+- `CollectorMailMappings` is the branch org chart: one row per collector with the management chain as user ids (`bm` / `rm` / `cm` / `bc` / `ed` / `gm`), every filled id a real user, null = nobody assigned. Role-checked: `bm` is a Branch Manager on 61 of 70, `rm` a Regional Manager on 69 of 84. 38 branches have neither. For "which branch does this manager own" this table is the answer; `Users.collector_id` never is.
+- `TechnicalUserSegmentMappings` scopes technical people by product: `segment2/3/4` are text and match `ItemCategories` (100% / 100% / 283 of 285) - a soft link because the category table has no segment key. `collector_id` is a comma-separated list stored as text. The same (user, segments) can appear on several rows with different branch lists - that is a split, not a duplicate; the only 6 exact copies are all expired and left alone.
+- All five mappings are snapshots (rows get deleted in crm) and drop any row whose user / circle / branch / customer / role we don't have - a bridge row with one end missing means nothing. Optional links (the six chain columns, `reporting_user_id`) go to null instead.
+- The auth columns (`password`, `current_password`, `otp_number`, `OTP`, `daily_OTP`, `push_token_key` and their expiry dates) and `mobile_number` are **never loaded**. `email` is loaded (filled on 952, a few shared mailboxes).
+
+Links to the master tables:
+
+```text
+UserRoles.user_id                        → Users.line_id                            (100%, row dropped if ever missing)
+UserRoles.role_id                        → Roles.line_id                            (100%, row dropped if ever missing)
+Users.reporting_to_id                    → Users.line_id                            (73%, null when crm has 0 / a gone user)
+UserMarketCircleMappings.user_id         → Users.line_id                            (100%, row dropped if ever missing)
+UserMarketCircleMappings.market_circle_id→ MarketCircles.header_id                  (100%, row dropped if ever missing)
+UserCollectorMappings.user_id            → Users.line_id                            (100%, row dropped if ever missing)
+UserCollectorMappings.collector_id       → Collectors.collector_id                  (100%, row dropped if ever missing)
+UserCustomerMappings.user_id             → Users.line_id                            (99.3%, 120 rows of 2 gone users dropped)
+UserCustomerMappings.customer_hdr_id     → CustomerMasters.header_id                (99.98%, 4 rows with 0 dropped)
+CollectorMailMappings.collector_id       → Collectors.collector_id                  (100%, unique)
+CollectorMailMappings.bm/rm/cm/bc/ed/gm_user_id → Users.line_id                     (100% where filled, null = nobody)
+TechnicalUserSegmentMappings.user_id     → Users.line_id                            (100%, row dropped if ever missing)
+TechnicalUserSegmentMappings.reporting_user_id → Users.line_id                      (100%, null if ever missing)
+TechnicalUserSegmentMappings.role_id     → Roles.line_id                            (100%, row dropped if ever missing)
+TechnicalUserSegmentMappings.segment2/3/4  ItemCategories.segment2/3/4              (soft, text. 100% / 100% / 283 of 285)
+```
+
+Things to know:
+
+- `Users` and `Roles` are upsert: a user deleted in crm stays in our copy (173 gaps in `line_id`), which is what history needs. `UserRoles` is a snapshot because its rows do get deleted (35 gaps).
+- `is_dummy` is null on 1,139 rows - null means a real user. `is_active` false on 153. `designation` / `department` are null on ~380 each. `user_code` is the employee code but 260 rows share one, so it is an attribute, not a key.
+- `Roles.role_type_id` (20 values) has no master in crm; `description` and `identifier` are empty on every role.
+
+---
+
 | Level | Table | PK | Mode | Filter | Stage fixes | Seed | Children |
 | ---: | --- | --- | --- | --- | --- | --- | --- |
 | 0 | Collectors | `collector_id` | upsert | – | – | – | MarketCircles, CustomerSites, SaleOrderHdrs, SaleOrderDtls, SocPendingDetails, Dispatches, Schedules, SocCancelDetails, DispatchDetails, InventoryOrgs |
@@ -499,9 +615,16 @@ Things to know:
 | 0 | QuotationStatus | `line_id` | upsert | – | – | – | QuotationHdrs, QuotationDtls |
 | 0 | JourneyCalendars | `line_id` | upsert | – | – | `unknown` (-1) | SCBusinessMonthlyPlanJCDtls |
 | 0 | ApSuppliers | `vendor_id` | upsert | – | – | – | BiPoDetails, PurchaseRequisitionHdrs |
+| 0 | Users | `line_id` | upsert | – | reporting_to `0` / gone → NULL (self link, checked on stage) | – | Users, UserRoles |
+| 0 | Roles | `line_id` | upsert | – | – | – | UserRoles |
 | 1 | MarketCircles | `header_id` | upsert | – | lower/trim | `unknown` (-1) | CustomerSites, SaleOrderHdrs, … |
 | 1 | ItemCategories | `header_id` | upsert | PC only | drop orphans | – | – |
 | 1 | PurchaseRequisitionPtoPts | `Header_id → header_id` | incremental | – | – | – | – |
+| 1 | UserRoles | `line_id` (unique user_id) | snapshot | – | drop row if user / role missing; keep latest per user | – | – |
+| 1 | UserCollectorMappings | `header_id` (unique user_id + collector_id) | snapshot | – | drop copies of a pair (keep lowest header_id); drop row if user / branch missing | – | – |
+| 1 | UserCustomerMappings | `header_id` (unique user_id + customer_hdr_id) | snapshot | – | drop copies of a pair (keep lowest header_id); drop row if user / customer missing | – | – |
+| 1 | CollectorMailMappings | `header_id` (unique collector_id) | snapshot | – | drop row if branch missing; the six chain user ids → NULL if missing | – | – |
+| 1 | TechnicalUserSegmentMappings | `line_id` | snapshot | – | drop row if user / role missing; reporting_user_id → NULL if missing | – | – |
 | 1 | InventoryOrgs | `inventory_org_id` | upsert | – | collector `0` → NULL | `unknown` (-1) | BiStockDetail, SaleOrderDtls, Dispatches, Schedules, SocCancelDetails, DispatchDetails, QuotationDtls, BiPoDetails, PurchaseRequisitionHdrs |
 | 2 | BiPoDetails | `id` (ours) | snapshot | PC item | – | – | – |
 | 2 | PurchaseRequisitionHdrs | `header_id` | snapshot | – | collector `0` → NULL, supplier `0` → NULL | – | PurchaseRequisitionDtls |
@@ -509,6 +632,7 @@ Things to know:
 | 2 | BiStockDetail | `header_id` | incremental, **large** (pk ranges, 4 workers) | trans_date ≥ 2024 and PC item code | warehouse not in master → `-1`; `item_id` derived from item_code (latest ItemMasters id per code), `-1` if none | – | – |
 | 2 | ItemInventoryOrgMappings | `header_id` (unique item_id + inventory_org_id) | snapshot | PC item | drop duplicate pair (keep lowest header_id); item / warehouse not in master → `-1` | – | – |
 | 2 | BiCollectorInventoryOrgMapping | `header_id` (unique collector_id + inventory_org_id) | snapshot | – | drop re-inserted pairs (keep lowest header_id); drop row if collector / warehouse not in master | – | – |
+| 2 | UserMarketCircleMappings | `header_id` | snapshot | – | drop row if user / circle missing (no dedupe: repeated pairs are validity history) | – | – |
 | 3 | PurchaseRequisitionDtls | `line_id` | snapshot | – | customer / collector `0` → NULL, po_line_id `0` → NULL, blank header_id if not loaded | – | – |
 | 3 | SaleOrderHdrs | `header_id` | incremental | – | missing site → `-1` on bill_to / ship_to | – | SaleOrderDtls, SocPendingDetails, Dispatches, Schedules, SocCancelDetails, DispatchDetails |
 | 3 | QuotationHdrs | `header_id` | snapshot | headers the loaded QuotationDtls point at | customer / sites `0` → `-1`, mc_code lower/trim + `unknown` | – | QuotationDtls |

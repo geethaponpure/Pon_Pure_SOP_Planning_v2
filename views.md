@@ -106,6 +106,23 @@ Status: nothing built yet. This is the list of what each table needs.
 | ItemInventoryOrgMappings | `dim_item_warehouse`: the planning grid = pairs with `enabled_flag = 'Y'`; left-join the stock position and dispatch onto it so an item a warehouse *may* stock but doesn't shows as zero, not as missing | disabled pairs are loaded too, a report decides whether to show them |
 | ItemInventoryOrgMappings | stock / orders on a pair that is **not** mapped (1 stock row today) - an exception report, not an error | |
 
+## user_and_scope
+
+| Table | What the view has to do | Why not at load |
+| --- | --- | --- |
+| Users | `dim_user`: user + role name (through `UserRoles`, 1:1) + manager name (self join on `reporting_to_id`) | three tables, the tool wants one row |
+| Users | "real, current users" = `is_active` and `coalesce(is_dummy, false) = false`; 163 dummies and 153 inactive are loaded as is | which users count is a report choice; dummies carry history |
+| Users | a user's branch / circle / customers come from the mapping tables (next), not from `Users` - `collector_id` there is empty on every row | |
+| Roles | the deleted role `SS Quote` still has 7 users - show it, don't drop it | |
+| UserMarketCircleMappings | `user_territory_current`: rows where `valid_to is null or valid_to >= today` (237). The 36 closed rows are past territories - keep them out of scope checks, use them for "who owned this circle in 2023" | history is kept at load, the cut-off is a rule |
+| UserMarketCircleMappings | a Sales Executive's branch = `MarketCircles.collector_id` of their current primary circle (`is_primary`); nobody has more than 3 circles | |
+| UserCollectorMappings | branch **permission** for back office users, not location: 18 users see 100+ branches (= all). Do not derive "user's branch" from it; for managers use `CollectorMailMappings` | |
+| UserCustomerMappings | `user_customers_current`: rows where `valid_to is null or valid_to >= today`; join `CustomerMasters` on `customer_hdr_id`, never on `customer_id` | |
+| CollectorMailMappings | **unpivot** into `branch_role_user (collector_id, role, user_id)` with role in bm / rm / cm / bc / ed / gm, nulls dropped - then "branches this manager owns" is one filter. 38 branches have neither bm nor rm: fall back to `MarketCircles.collector_id` → `Collectors`, or leave blank per report | crm stores the chain wide |
+| CollectorMailMappings | split `coordinator_user_id` (text, ids or a comma list) into the same bridge as role `coordinator` | |
+| TechnicalUserSegmentMappings | `user_segments_current`: `valid_to` null or future. Join `ItemCategories` on `segment2 + segment3 (+ segment4 when filled)` to get the items a technical person covers; then split `collector_id` (comma list, `'0'` / null = all branches) to narrow by branch | the segment key is text on both sides, no fk |
+| all mappings | **a user's scope** = union of: their current circle(s) (Sales Exec), branches (back office), customers (TE), segments x branches (TM / TH), branches managed (chain). Roles decide which one applies - build one `user_scope` view keyed by user with the four lists, rather than four separate joins in every report | |
+
 ## cross cutting
 
 - **collector**: an order's `collector_id` (booking collector) differs from the ship-to site's circle collector on ~10% of orders. Both are legitimate; a report must say which one it uses.
