@@ -57,9 +57,11 @@ SOURCE_FILTERS = {
     "ItemInventoryOrgMappings": "[item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
     # no item id on the stock table, filter by item code. ~31% of each day. 2024 on = ~7.5M rows
     "BiStockDetail":"[trans_date] >= '2024-01-01' AND [item_code] IN (SELECT i.item_code FROM [CRMPROD].[dbo].[ItemMasters] i JOIN [CRMPROD].[dbo].[ItemCategories] c ON c.item_id = i.item_id WHERE c.segment1 = 'Performance Chemicals')",
-    "DispatchDetails": "[schedule_date] >= '2021-01-01' AND [item_segment] = 'Performance Chemicals'",
-    # only the headers those details point at, so the fk always holds. ~253k of 1.4M
-    "Dispatches": "[header_id] IN (SELECT header_id FROM [CRMPROD].[dbo].[DispatchDetails] WHERE [schedule_date] >= '2021-01-01' AND [item_segment] = 'Performance Chemicals')",
+    # by today's classification (item_id), like every other fact and dim_item. the item_segment text on the row is the
+    # segment at dispatch time: a product reclassified since would be in or out of scope differently from its order line
+    "DispatchDetails": "[schedule_date] >= '2021-01-01' AND [item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
+    # only the headers those details point at, so the fk always holds
+    "Dispatches": "[header_id] IN (SELECT header_id FROM [CRMPROD].[dbo].[DispatchDetails] WHERE [schedule_date] >= '2021-01-01' AND [item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals'))",
     # ~393k of 2.6M
     "Schedules": "[schedule_date] >= '2021-01-01' AND [item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
     # ~17k of 126k
@@ -345,6 +347,9 @@ STAGE_FIXES = {
             WHERE NOT EXISTS (SELECT 1 FROM "Dispatches" d WHERE d.header_id = stage.header_id)''',
         '''UPDATE stage SET schedule_line_id = NULL
             WHERE NOT EXISTS (SELECT 1 FROM "Schedules" s WHERE s.line_id = stage.schedule_line_id)''',
+        # a pc item shipped against an order line for a non pc item (a substitution): that line is outside our scope. blank it
+        '''UPDATE stage SET sale_order_detail_line_id = NULL
+            WHERE NOT EXISTS (SELECT 1 FROM "SaleOrderDtls" d WHERE d.line_id = stage.sale_order_detail_line_id)''',
         # warehouse matches today, safety net
         '''UPDATE stage SET inventory_org_id = -1
             WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.inventory_org_id)''',

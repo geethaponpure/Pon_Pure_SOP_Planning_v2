@@ -6,7 +6,7 @@ import psycopg2
 from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from app.core.database import get_postgres_cursor, get_sql_server_cursor
 from app.schemas.tables_schemas import TABLES_COLUMNS
-from app.core.constants import SQL_TO_PG_TYPES, CRM_TABLES
+from app.core.constants import CRM_TABLES
 from app.core.config import settings
 from app.repositories.views import refresh_materialized_views
 from app.repositories.utils import (SOURCE_FILTERS, SEED_ROWS, STAGE_FIXES, LOAD_LEVELS,
