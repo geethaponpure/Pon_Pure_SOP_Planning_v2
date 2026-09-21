@@ -46,6 +46,7 @@ The planned and actual deliveries against the orders, and the cancellations.
 - **DispatchDetails** - what was actually delivered: product, quantity, value, date, warehouse.
 - **SocCancelDetails** - order lines that were cancelled or closed, with the reason.
 - **DeliveryFroms** - the list of delivery points.
+- **Reasons** - the list of reasons CRM screens offer, in particular why an order line was cancelled.
 
 ## 5. quotation_master - what we offered before it became an order
 

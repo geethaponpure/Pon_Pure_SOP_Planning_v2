@@ -221,7 +221,13 @@ Things to know:
 - Cancelled dispatches: `Dispatches.despatch_status_id = 4` (InvoiceCancel) or `Dispatches.oracle_status = 'CANCELLED'`. Two different sets, no overlap.
 - `Schedules.schedule_status_id` is not a clean open flag (92% sit at 6 SOCConfirmed even after dispatch). `SocPendingDetails` is the authoritative open book; `Schedules` gives the per line history.
 - `Schedules.dispatched_quantity` is stale in crm and not loaded. Dispatched qty comes from `DispatchDetails` via `schedule_line_id`.
-- `SocCancelDetails.close_reason_id` and `status_id` are codes with no master table in crm.
+- `SocCancelDetails.close_reason_id` → `Reasons.header_id` (crm's shared reason lookup, loaded; module `Initiate Close`: Incorrect SOC Details, Duplicate SOC, Order Lost, Partial Quantity, Amended PO ..). `status_id` is crm's `ApprovalStatus`: 6 Approve, 7 Reject, 8 Referback, -1 Awaiting, 0 draft - decoded in the views, not loaded.
+- Status codes (decoded in the views): `Dispatches.despatch_status_id` = `DispatchStatus` (1 Pending, 2 Confirmed, 3 MoveToOracle = invoiced, 4 InvoiceCancel); `Schedules.schedule_status_id` = `ScheduleStatus` (1 Pending, 2 ReSchedule, 3 Reject, 4 Confirmed, 5 Closed, 6 SOCConfirmed, 7 Cancelled).
+- **Dispatched means confirmed.** crm's own rule (`fn_SOCScheduleQty`): a dispatch counts when `despatch_confirm_flag = 'Y'` and the note is not cancelled (status 4, or `oracle_status = 'CANCELLED'` - two different sets). The flag is loaded; `Y` on almost all, `C` on a few hundred, null on the rest.
+- **The schedule-line open book** (crm's `FnScheduleDtlPending` / `SpSyncSocPendingOrder_Forecasting`): balance = `schedule_quantity` − confirmed dispatches on the schedule line; open when the order line is OPEN, the schedule is not Reject / Closed / Cancelled and a balance is left; effective date = `reschedule_date` when set. For open *demand* crm also drops GROUP COMPANY and lines with a pending cancellation. `fact_schedule_line` rebuilds this from the tables.
+- Dispatch value is clean on this cluster (`total_value = quantity × unit_price` on every line), unlike the order tables. The dispatched item differs from the ordered item on a few percent of lines (substitutions) - the dispatch carries what actually shipped.
+- `Schedules.reschedule_date` is filled on every row (equal to the schedule date when never moved); `reschedule_reason` is text, with `0` and blank as junk.
+- crm's "despatch performance" report (`FnDespatchPerformanceHdr`) is about freight / LR confirmation (`InvoiceFreightHdrs`, not loaded), a logistics KPI - not on-time delivery. On-time here = first confirmed dispatch vs `customer_requested_date`.
 - A few hundred `DispatchDetails` rows have a blank `header_id` or `schedule_line_id`: their parent falls outside the parent's filter. They still join through the order line.
 
 ---
@@ -654,6 +660,7 @@ Things to know:
 | 0 | CustomerMasters | `header_id` | upsert | – | `0` → NULL on customer_id, customer_number | `unknown` (-1) | CustomerSites, SaleOrderHdrs, SaleOrderDtls, SocPendingDetails, Dispatches, Schedules, SocCancelDetails, DispatchDetails |
 | 0 | ItemMasters | `item_id` | upsert | – | – | `unknown` (-1) | ItemCategories, PurchaseRequisitionPtoPts, SaleOrderDtls, Schedules, SocCancelDetails, DispatchDetails, QuotationDtls, BiPoDetails, PurchaseRequisitionDtls, BiStockDetail |
 | 0 | DeliveryFroms | `line_id` | upsert | – | – | `unknown` (-1) | SaleOrderDtls, QuotationDtls |
+| 0 | Reasons | `header_id` | upsert | – | – | – | SocCancelDetails |
 | 0 | QuotationStatus | `line_id` | upsert | – | – | – | QuotationHdrs, QuotationDtls |
 | 0 | JourneyCalendars | `line_id` | upsert | – | – | `unknown` (-1) | SCBusinessMonthlyPlanJCDtls |
 | 0 | ApSuppliers | `vendor_id` | upsert | – | – | – | BiPoDetails, PurchaseRequisitionHdrs |
@@ -687,9 +694,9 @@ Things to know:
 | 4 | QuotationDtls | `line_id` | snapshot | creation_date ≥ 2021 and PC item | delivery point `0` → `-1`, status `0` → NULL, junk date → NULL, blank header_id if not loaded | – | – |
 | 4 | SCBusinessMonthlyPlanDtls | `line_id` | snapshot | – | customer `0` → `-1`, blank header_id if not loaded | – | SCBusinessMonthlyPlanJCDtls |
 | 5 | Schedules | `line_id` | snapshot | schedule_date ≥ 2021 and PC item | junk dates → NULL, site `0` → `-1` | – | DispatchDetails |
-| 5 | SocCancelDetails | `header_id` | incremental | creation_date ≥ 2021 and PC item | – | – | – |
+| 5 | SocCancelDetails | `header_id` | incremental | creation_date ≥ 2021 and PC item | – (close_reason_id → Reasons, 100%) | – | – |
 | 5 | SCBusinessMonthlyPlanJCDtls | `line_id` | snapshot | – | jc_type `0` → `-1`, blank header_id (= Dtls.line_id) if not loaded | – | – |
-| 6 | DispatchDetails | `line_id` | snapshot | schedule_date ≥ 2021 and item_segment = PC | junk date → NULL, blank header_id / schedule_line_id if parent not loaded | – | – |
+| 6 | DispatchDetails | `line_id` | snapshot | schedule_date ≥ 2021 and PC item (by item_id, like every other fact) | junk date → NULL, blank header_id / schedule_line_id / sale_order_detail_line_id if parent not loaded | – | – |
 
 Snapshot = wiped and reloaded in full every run (rows change after creation in crm). Incremental = `pk > last loaded pk`, rows never change. Upsert = masters: read in full every run and merged on the pk, never truncated (children point at them), so a lead that becomes a customer or a site that moves circle is picked up.
 Parents load before children (levels). If a child arrives before its parent (crm moved on during the run), incremental tables hold the row back until the next run; snapshot tables blank the fk and the next full reload fixes it.

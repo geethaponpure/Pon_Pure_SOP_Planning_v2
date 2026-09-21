@@ -10,7 +10,7 @@
 UPSERT_TABLES = {"Collectors", "MarketCircles", "CustomerMasters", "CustomerSites",
                  "ItemMasters", "ItemCategories", "DeliveryFroms", "QuotationStatus", 
                  "JourneyCalendars", "ApSuppliers", "InventoryOrgs",
-                 "Users", "Roles", "ArCustomers"}
+                 "Users", "Roles", "ArCustomers", "Reasons"}
 
 
 
@@ -471,7 +471,8 @@ PARENT_CHECK = {
                          ("sale_order_header_id",      "SaleOrderHdrs",   "header_id"),
                          ("item_id",                   "ItemMasters",     "item_id"),
                          ("customer_id",               "CustomerMasters", "customer_id"),
-                         ("inventory_org_id",          "InventoryOrgs", "inventory_org_id")],
+                         ("inventory_org_id",          "InventoryOrgs", "inventory_org_id"),
+                         ("close_reason_id",           "Reasons",         "header_id")],
     "BiPoDetails":     [("inventory_item_id", "ItemMasters",           "item_id"),
                         ("vendor_id",         "ApSuppliers",           "vendor_id"),
                         ("inv_org_id",        "InventoryOrgs", "inventory_org_id")],
@@ -524,7 +525,7 @@ PARENT_CHECK = {
 #---------------------------- Parent tables must load before child tables -------------------------------------
 LOAD_LEVELS = [
     ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms",
-     "QuotationStatus", "JourneyCalendars", "ApSuppliers", "Users", "Roles"],   # no parents (Users only points at itself)
+     "QuotationStatus", "JourneyCalendars", "ApSuppliers", "Users", "Roles", "Reasons"],   # no parents (Users only points at itself)
     ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "InventoryOrgs",
      "UserRoles", "UserCollectorMappings", "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings",
      "ArCustomers"],                                                     # need level 0 (InventoryOrgs -> Collectors, the user mappings -> Users / Roles / Collectors / CustomerMasters)

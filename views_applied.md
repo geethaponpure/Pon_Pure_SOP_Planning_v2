@@ -431,3 +431,144 @@ SELECT collector_id, sum(quantity) FROM fact_order_line WHERE is_demand AND orde
 -- the open book: pending quantity by kind
 SELECT order_kind, is_inter_company, count(*), sum(pending_qty) FROM fact_open_order GROUP BY 1, 2 ORDER BY 3 DESC;
 ```
+
+---
+
+## dispatch_master  `04_dispatch_master.sql`
+
+```text
+  Dispatches ─────────┐
+  DispatchDetails ────┤
+  SaleOrderHdrs/Dtls ─┼──► fact_dispatch (materialized)       what actually shipped
+  v_transaction_type ─┘             │
+                                    ▼
+  Schedules ──────────────► fact_schedule_line (materialized)  planned vs shipped, open balance, on-time
+  SocCancelDetails ───────► fact_order_cancellation           cancel requests and their approval
+  Reasons ────────────────┘
+```
+
+### fact_dispatch - what actually shipped  (materialized)
+
+| | |
+| --- | --- |
+| one row per | dispatched line, Performance Chemicals products since 2021 |
+| join on | `item_id` → dim_item · `customer_id` → dim_customer · `ship_to_site_use_id` → dim_customer_site · `collector_id` → dim_collector · `inventory_org_id` → InventoryOrgs · `order_line_id` → fact_order_line · `schedule_line_id` → fact_schedule_line |
+| answers | what shipped, when, to whom, from where, how much, worth what - the sales history |
+
+| column | meaning | example |
+| --- | --- | --- |
+| `line_id`, `dispatch_id` | the line and its dispatch note | |
+| `dispatch_date` | the day the goods left - the date axis | 2026-08-14 |
+| `invoice_date`, `invoice_number` | the oracle invoice, empty until invoiced | |
+| `dispatch_status` | Pending / Confirmed / MoveToOracle (invoiced) / InvoiceCancel | MoveToOracle |
+| `is_confirmed`, `is_cancelled` | the note's confirm flag; cancelled by status or by oracle | true, false |
+| **`counts_as_dispatched`** | confirmed and not cancelled - the goods really left. **Filter on this for "shipped"** | true |
+| `customer_id`, `bill_to_site_use_id`, `ship_to_site_use_id`, `collector_id`, `inventory_org_id` | who, where to, which branch, which warehouse | |
+| `order_id`, `order_line_id`, `schedule_line_id` | what it fulfils | |
+| `transaction_type`, `order_kind`, `is_sale`, `is_demand`, `is_inter_company` | the same flags as the order views, inherited from the order | sale, true, true, false |
+| `item_id`, `order_item_id`, `is_substitution` | what shipped vs what was ordered | |
+| `sale_category`, `trading_manufacture`, `uom` | Intact / Repack / Bulk ..; Trading / Manufacturing; unit (folded) | |
+| `quantity`, `scheduled_qty` | what shipped, what was scheduled for it | 500, 500 |
+| `unit_price`, `has_price`, `line_value` | tax exclusive; `line_value` = qty × price (crm's total_value, reliable here), empty when unpriced | |
+| `tax_percentage`, `packing_cost`, `created_at` | | |
+
+**Rules baked in**
+
+```text
+  does this line count as shipped ?
+        │
+  note confirmed (flag = Y) ? ──no──► counts_as_dispatched = false
+        │
+       yes
+        ▼
+  note cancelled (status InvoiceCancel, or oracle CANCELLED) ? ──yes──► false
+        │
+       no ──► true          (crm's rule, fn_SOCScheduleQty)
+```
+
+- `item_id` is the product that **shipped**; when a different product was ordered, `is_substitution` is true and `order_item_id` holds the ordered one.
+- `is_sale` / `is_demand` / `is_inter_company` come from the order header through `v_transaction_type` - one decision for orders, dispatches and quotes.
+- dispatch value is trustworthy (unlike order value): crm's `total_value` equals qty × price on every line.
+
+### fact_schedule_line - planned vs shipped, per schedule line  (materialized)
+
+| | |
+| --- | --- |
+| one row per | schedule line (the planned dispatch of an order line) |
+| join on | `order_line_id` → fact_order_line · `schedule_line_id` ← fact_dispatch · `item_id`, `customer_id`, `collector_id`, `inventory_org_id` → the dims |
+| answers | what is still open, was it on time, was it rescheduled and why, was it cancelled |
+
+| column | meaning | example |
+| --- | --- | --- |
+| `schedule_line_id`, `order_id`, `order_line_id` | the line and its order | |
+| `schedule_date`, `reschedule_date`, **`effective_date`** | planned date, moved-to date, the one that counts | |
+| `is_rescheduled`, `reschedule_reason` | moved? why (Customer Requested, Stock Not Available, Logistics Issue ..) | |
+| `customer_requested_date` | what the customer asked for - the on-time reference | |
+| `schedule_status`, `is_confirmed` | Pending / ReSchedule / Reject / Confirmed / Closed / SOCConfirmed / Cancelled - **not** an open flag | SOCConfirmed |
+| `customer_id`, `bill_to_site_use_id`, `ship_to_site_use_id`, `collector_id`, `inventory_org_id`, `item_id` | the dims | |
+| `order_kind`, `is_demand`, `is_inter_company`, `sale_category` | as on the order | |
+| `scheduled_qty`, `dispatched_qty`, **`balance_qty`** | planned, really shipped (confirmed, not cancelled), left | 1000, 600, 400 |
+| `unit_price`, `has_price`, `balance_value` | balance × price | |
+| **`is_open`** | crm's open rule (see below) | |
+| `has_approved_cancellation`, `has_pending_cancellation`, `cancelled_qty` | cancellations on the order line | |
+| `first_dispatch_date`, `last_dispatch_date` | when it shipped | |
+| `days_vs_requested`, `days_vs_scheduled` | first dispatch minus requested / effective date. > 0 = late | -2 |
+
+**Open, the way crm computes it**
+
+```text
+  order line status = OPEN ?
+        │ yes
+  schedule not Reject / Closed / Cancelled ?
+        │ yes
+  scheduled_qty − dispatched_qty > 0 ?
+        │ yes
+        ▼
+     is_open = true
+        │
+        │  for OPEN DEMAND (what crm feeds its forecasting with) add:
+        ▼
+  is_demand  AND  NOT has_pending_cancellation
+```
+
+- `dispatched_qty` counts only lines with `counts_as_dispatched` - the same rule as fact_dispatch.
+- on-time delivery: `days_vs_requested <= 0`. Empty until something ships.
+
+### fact_order_cancellation - requests to drop an order line
+
+| | |
+| --- | --- |
+| one row per | cancellation request |
+| join on | `order_line_id` → fact_order_line · `customer_id`, `item_id`, `collector_id`, `inventory_org_id` → the dims |
+| answers | who wanted to drop what, why, and was it approved |
+
+| column | meaning | example |
+| --- | --- | --- |
+| `cancellation_id`, `order_id`, `order_line_id`, `schedule_line_id` | the request and what it is on | |
+| `requested_date`, `decided_date` | raised, decided | |
+| `approval_status`, `is_approved`, `is_pending` | Approved / Rejected / Referred back / Awaiting / Draft | Approved |
+| `reason` | Incorrect SOC Details / Duplicate SOC / Order Lost / Partial Quantity / Amended PO .. (from `Reasons`) | Duplicate SOC |
+| `comment` | free text | |
+| `customer_id`, `item_id`, `inventory_org_id`, `collector_id`, `sale_category` | the dims | |
+| `schedule_date`, `scheduled_qty`, `shipped_qty`, **`remaining_qty`** | what was planned, what had shipped, what is being cancelled | |
+
+- an **approved** request means `remaining_qty` will never ship; a **pending** one keeps the line out of open demand (crm's rule).
+
+**Quick checks** (pgAdmin, after `SET search_path TO ponpure_planner;`)
+
+```sql
+-- shipped demand by month, this year
+SELECT date_trunc('month', dispatch_date)::date AS month, sum(quantity) FROM fact_dispatch
+WHERE counts_as_dispatched AND is_demand AND dispatch_date >= date_trunc('year', current_date) GROUP BY 1 ORDER BY 1;
+
+-- the open book, crm's forecasting rule
+SELECT collector_id, count(*), sum(balance_qty) FROM fact_schedule_line
+WHERE is_open AND is_demand AND NOT has_pending_cancellation GROUP BY 1 ORDER BY 3 DESC LIMIT 10;
+
+-- on-time rate by month
+SELECT date_trunc('month', effective_date)::date AS month,
+       round(100.0 * count(*) FILTER (WHERE days_vs_requested <= 0) / nullif(count(*) FILTER (WHERE days_vs_requested IS NOT NULL), 0), 1) AS on_time_pct
+FROM fact_schedule_line WHERE is_demand AND effective_date >= date_trunc('year', current_date) GROUP BY 1 ORDER BY 1;
+
+SELECT approval_status, reason, count(*) FROM fact_order_cancellation GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 10;
+```

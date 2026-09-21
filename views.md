@@ -11,7 +11,7 @@ Two kinds:
 
 Built views are documented in `views_applied.md` (what each view is, columns, rules, diagrams). This file is only the to-do list.
 
-Status: item_master, customer_master, sales_order_soc done. Next: dispatch_master.
+Status: item_master, customer_master, sales_order_soc, dispatch_master done. Next: quotation_master.
 
 ## customer_master - built, see `views_applied.md`
 
@@ -19,20 +19,7 @@ Status: item_master, customer_master, sales_order_soc done. Next: dispatch_maste
 
 ## sales_order_soc - built, see `views_applied.md`
 
-## dispatch_master
-
-| Table | What the view has to do | Why not at load |
-| --- | --- | --- |
-| DispatchDetails | `fact_dispatch`: dispatched qty / value per order line per date. Date = `schedule_date`. Item = `item_id` (what shipped, differs from the order line on 7%) | |
-| Dispatches | cancelled dispatches: exclude `despatch_status_id = 4` OR `oracle_status = 'CANCELLED'` (two different sets, no overlap) | raw keeps them, reports must drop them |
-| DispatchDetails | blank `header_id` / `schedule_line_id` (a few hundred): parent outside the parent's filter. Still join through the order line | |
-| Schedules | `schedule_status_id` is NOT an open flag (92% sit at 6 after dispatch). Use `SocPendingDetails` for open, `Schedules` for the per line history and reschedule reasons | |
-| Schedules | `dispatched_quantity` is stale in crm and not loaded: dispatched qty comes from `DispatchDetails` via `schedule_line_id` | |
-| Schedules | otif: `customer_requested_date` vs `DispatchDetails.schedule_date` per schedule line | |
-| SocCancelDetails | `close_reason_id` → `Reasons.header_id` (303 row lookup, not loaded yet). `status_id` has no master | add Reasons, then a join |
-| SocCancelDetails | net open book = SocPending minus cancelled remaining qty where the cancel is approved (`status_id = 6`) | |
-| Schedules / DispatchDetails | **schedule-line open book** (crm's own forecasting feed, `SpSyncSocPendingOrder_Forecasting`): line OPEN, balance = `schedule_quantity − dispatched` > 0, not GROUP COMPANY, **no pending cancellation** (`SocCancelDetails.status_id not in 6, 7`), effective date = `reschedule_date` when set else `schedule_date`. This is `is_demand` on the open book | crm computes it into `SocPendingAlertToBUSINESS_FORECASTING`; we rebuild it from the two tables |
-| DispatchDetails | "dispatched" must mean **confirmed**: `despatch_confirm_flag = 'Y'` and note not cancelled (`despatch_status_id <> 4`) - crm's `fn_SOCScheduleQty` rule. Check the flag is loaded on `Dispatches` | |
+## dispatch_master - built, see `views_applied.md`
 
 ## quotation_master
 

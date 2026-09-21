@@ -37,7 +37,7 @@ CRM_TABLES = {
         "Schedules",                        # planned dispatch per SOC line, with reschedules and status
         "SocCancelDetails",                 # cancelled / closed SOC lines, remaining qty and reason
         "DeliveryFroms",                    # delivery point lookup for SaleOrderDtls.delivery_from_id
-        #"Reasons"
+        "Reasons",                          # reason lookup: the soc cancel reasons (and the other screens' reasons, small)
         # "Billings",                       # invoice lines - add with finance scope
         # "DespatchDeliveryDates",          # actual delivery date per invoice line - add for OTIF
         # "FnDespatchDetails",              # TVF - dispatch cube (item x customer x collector x MC)

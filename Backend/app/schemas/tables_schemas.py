@@ -206,6 +206,18 @@ TABLES_COLUMNS = {
 #-------------------------------------------- Dispatch / billing history ------------------------
 
 "dispatch_master" : {
+    "Reasons": [                  # crm's reason lookup for many screens. loaded for the soc cancel reasons, upsert, level 0
+        "header_id",              # pk. SocCancelDetails.close_reason_id points here, 100% match
+        "name",                   # Incorrect SOC Details / Duplicate SOC / Order Lost / Partial Quantity / Amended PO ..
+        "description",
+        "module_name",            # which screen uses it: Initiate Close (the cancel reasons), Reschedule Reason, Business Lost ..
+        "type_id",                # crm's id for the module
+        "is_active",
+        "creation_date",
+        "last_update_date",
+        # skipped: field_description, is_mandatory, created_by / last_updated_by
+    ],
+
     "DeliveryFroms": [            # delivery point lookup, 46 rows, never edited
         "line_id",                # pk. SaleOrderDtls.delivery_from_id points here, -1 = unknown
         "name",                   # Kandla, Vizag, Ennore ..
@@ -233,6 +245,7 @@ TABLES_COLUMNS = {
         "oracle_status",          # CANCELLED or empty. second cancel signal
         "Cancel_reason",          # Credit Issue / Wrong Billing Date / Wrong Tax Calculation
         "despatch_confirm_date",  # when the branch confirmed it
+        "despatch_confirm_flag",  # Y = confirmed, C on a few hundred, null = not confirmed. crm's dispatched-qty rule (fn_SOCScheduleQty) counts Y only
         "creation_date",
         "last_update_date",
     ],
@@ -275,7 +288,7 @@ TABLES_COLUMNS = {
         "schedule_quantity",      # what was scheduled
         "shipped_quantity",       # already gone before the cancel
         "remaining_quantity",     # the cancelled qty
-        "close_reason_id",        # reason code, no master table in crm. ask crm team for the list
+        "close_reason_id",        # -> Reasons.header_id (module Initiate Close), 100% match
         "status_id",              # workflow status code, no master table in crm
         "approved_action_date",   # when the cancel was approved
         "comment",                # free text reason, the only human readable why

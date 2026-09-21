@@ -29,6 +29,23 @@ class DeliveryFroms(Base):
 
 
 
+class Reasons(Base):
+    """crm's reason lookup, shared by many modules (module_name says which). loaded for the soc cancel reasons
+    (module Initiate Close), the rest comes along - it is small."""
+
+    __tablename__ = "Reasons"
+
+    header_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    name = Column(Text, nullable=False)                                      # Incorrect SOC Details / Duplicate SOC / Order Lost / Partial Quantity ..
+    description = Column(Text)
+    module_name = Column(Text)                                               # which screen uses it: Initiate Close, Reschedule Reason, Business Lost ..
+    type_id = Column(BigInteger)                                             # crm's id for the module
+    is_active = Column(Boolean)
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+
+
 class Dispatches(Base):
 
     __tablename__ = "Dispatches"
@@ -50,6 +67,7 @@ class Dispatches(Base):
     oracle_status = Column(Text)                                             # CANCELLED or empty. second cancel signal, no overlap with status 4
     cancel_reason = Column(Text)                                             # Credit Issue / Wrong Billing Date / Wrong Tax Calculation
     despatch_confirm_date = Column(DateTime)                                 # when the branch confirmed it
+    despatch_confirm_flag = Column(Text)                                     # Y = confirmed (almost all), C on a few hundred, null = not confirmed. crm's own dispatched-qty rule reads this
     creation_date = Column(DateTime)
     last_update_date = Column(DateTime)
 
@@ -116,7 +134,7 @@ class SocCancelDetails(Base):
     schedule_quantity = Column(Numeric(18, 2), nullable=False)
     shipped_quantity = Column(Numeric(18, 2), nullable=False)                # already gone before the cancel
     remaining_quantity = Column(Numeric(18, 2), nullable=False)              # the cancelled qty
-    close_reason_id = Column(BigInteger, nullable=False)                     # reason code, no master in crm. 19 / 74 / 72 / 73 cover 92%
+    close_reason_id = Column(BigInteger, ForeignKey("Reasons.header_id"), nullable=False, index=True)   # -> Reasons (module Initiate Close), 100% match. 19 / 74 / 72 / 73 cover 92%
     status_id = Column(BigInteger, nullable=False)                           # workflow status code, no master in crm. 6 is 92%
     approved_action_date = Column(DateTime)                                  # when the cancel was approved
     comment = Column(Text)                                                   # free text reason

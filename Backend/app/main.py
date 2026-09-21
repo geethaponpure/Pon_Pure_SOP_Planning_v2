@@ -4,7 +4,7 @@ from .models.metadata import crm_sync_table
 from .models.customer_master import CustomerMasters, CustomerSites, Collectors, MarketCircles, TempCustomers, ArCustomers
 from .models.items_master import ItemCategories, ItemMasters, PurchaseRequisitionPtoPts
 from .models.sales_order_soc import SaleOrderHdrs, SaleOrderDtls, SocPendingDetails
-from .models.dispatch_master import DeliveryFroms, Dispatches, DispatchDetails, Schedules, SocCancelDetails
+from .models.dispatch_master import DeliveryFroms, Reasons, Dispatches, DispatchDetails, Schedules, SocCancelDetails
 from .models.quotation_master import QuotationStatus, QuotationHdrs, QuotationDtls
 from .models.business_plan import JourneyCalendars, SCBusinessMonthlyPlanHdrs, SCBusinessMonthlyPlanDtls, SCBusinessMonthlyPlanJCDtls
 from .models.purchase_master import ApSuppliers, BiPoDetails, PurchaseRequisitionHdrs, PurchaseRequisitionDtls
