@@ -122,6 +122,15 @@ The relationships represent:
 - `SaleOrderHdrs` is the parent table for both tables.
 - `SocPendingDetails` has no link to `SaleOrderDtls` - the report carries no line id, so a pending row joins the order, never a specific line.
 - `SocPendingDetails` is a daily snapshot from CRM. It has no key of its own, so it is wiped and reloaded every run with our own `id` as primary key.
+- Scope: `SaleOrderDtls` and `SocPendingDetails` are loaded for Performance Chemicals products only (load filter on the item), like dispatch, quotes and stock. `SaleOrderHdrs` stays complete on purpose - it is incremental, and a header that gets a PC line added later would otherwise be missing when that line arrives.
+
+Things to know (confirmed with the crm team, sep 2026):
+
+- **Transaction types.** `Taxable Intra / Inter State` are customer sales. **`Cogt`** is one too - it is Color Chemicals & Dyes LLP's own manufactured textile chemicals sold to third party customers (normal margins, GST, credit terms, dispatched from CCL's warehouses); crm never treats it differently from Taxable, so neither do we. **`BTS` / `HSS`** = Bond Transfer Sales / High Seas Sales: imports sold before customs clearance, tax free, dispatched from port orgs, never touching branch stock; about 40% go to group entities. `Sample`, `Stock Transfer`, `Job Work` are not sales. The mapping lives in the view `v_transaction_type` (`order_kind`, `is_sale`, `is_demand`) and is reused by every fact.
+- **`total_sales_price` is not a usable value.** Set once at order entry and never touched again: tax inclusive on some screens (× 1.18 / 1.12 / 1.05), stale when the quantity was edited, 0 on the Dec-2019 migration batch. `unit_price` is the stable fact - identical on the order line, the schedule and the dispatch - so value = `quantity × unit_price` (tax exclusive). Authoritative invoiced revenue lives in `PureGPReports` (not loaded).
+- **`unit_price = 0` is structural.** Almost all of it is the GROUP COMPANY branch (supplies to group entities at a transfer price crm never receives; 30% of the open book) and marketplace orders (the price lives in the marketplace feed). Never back filled. The views flag these as `is_inter_company` / `is_ecommerce`.
+- **`status` is not the open book.** crm keeps a line `OPEN` until someone closes it (hundreds of thousands of delivered lines are still OPEN). Pending = OPEN **and** a balance left after schedules and dispatches - exactly what crm's daily `SPPendingOrderDtlforUsers` writes into `SocPendingDetails` (bulk counts as done at 95%). Our incremental copy never re-reads a line, so old `OPEN` values drift from crm - harmless, nothing derives pending from them.
+- crm has a **PC Projection** module (`SP_PCProjectionReport`, `SCBusinessPlanProjections`, `FN_PCProjection_GetOpenSOCQuantity` = `schedule_quantity - dispatched` on schedules not cancelled with the line OPEN). It combines the business plan, open SOC, confirmed quotes and open leads - to be read end to end with the business_plan cluster.
 
 Links to the master tables:
 
@@ -672,8 +681,8 @@ Things to know:
 | 3 | SaleOrderHdrs | `header_id` | incremental | – | missing site → `-1` on bill_to / ship_to | – | SaleOrderDtls, SocPendingDetails, Dispatches, Schedules, SocCancelDetails, DispatchDetails |
 | 3 | QuotationHdrs | `header_id` | snapshot | headers the loaded QuotationDtls point at | customer / sites `0` → `-1`, mc_code lower/trim + `unknown` | – | QuotationDtls |
 | 3 | SCBusinessMonthlyPlanHdrs | `header_id` | snapshot | – | customer `0` → `-1`, wrong site → `-1` (NULL kept), new_customer_marketcircle lower/trim + `unknown` | – | SCBusinessMonthlyPlanDtls, SCBusinessMonthlyPlanJCDtls |
-| 4 | SaleOrderDtls | `line_id` | incremental | – | `CLOSE` → `Closed`, delivery point `0` → `-1` | – | Schedules, SocCancelDetails, DispatchDetails |
-| 4 | SocPendingDetails | `id` (ours) | snapshot | – | lower/trim + `unknown` on market_circle | – | – |
+| 4 | SaleOrderDtls | `line_id` | incremental | PC item | `CLOSE` → `Closed`, delivery point `0` → `-1`, warehouse `0` → `-1` | – | Schedules, SocCancelDetails, DispatchDetails |
+| 4 | SocPendingDetails | `id` (ours) | snapshot | PC item code | lower/trim + `unknown` on market_circle | – | – |
 | 4 | Dispatches | `header_id` | snapshot | headers the loaded DispatchDetails point at | – | – | DispatchDetails |
 | 4 | QuotationDtls | `line_id` | snapshot | creation_date ≥ 2021 and PC item | delivery point `0` → `-1`, status `0` → NULL, junk date → NULL, blank header_id if not loaded | – | – |
 | 4 | SCBusinessMonthlyPlanDtls | `line_id` | snapshot | – | customer `0` → `-1`, blank header_id if not loaded | – | SCBusinessMonthlyPlanJCDtls |

@@ -1,6 +1,6 @@
 # Database overview
 
-Our planning database is a copy of the CRM data that the planning tool needs, refreshed from the CRM automatically. It holds 38 tables grouped into 9 areas. The master lists (products, customers, warehouses, people) are copied in full. The large history tables are limited to the Performance Chemicals business - orders in full, dispatches and quotations from 2021, stock from 2024.
+Our planning database is a copy of the CRM data that the planning tool needs, refreshed from the CRM automatically. It holds 38 tables grouped into 9 areas. The master lists (products, customers, warehouses, people) are copied in full. The large history tables are limited to the Performance Chemicals business - order lines and the open order book for PC products, dispatches and quotations from 2021, stock from 2024.
 
 This page explains, in plain words, what each area and each table contains. The technical detail (how the tables connect, known data quirks) is in `relationship.md`.
 

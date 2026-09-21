@@ -45,6 +45,12 @@ DERIVED_COLUMNS = {
 #---------------------------------------------Filter--------------------------------------------------
 SOURCE_FILTERS = {
     "ItemCategories": "[segment1] = 'Performance Chemicals'",
+    # order lines on performance chemicals products only, like dispatch / quotes / stock. about a sixth of all lines.
+    # SaleOrderHdrs stays complete on purpose: it is incremental, and a header that gets a PC line added later would
+    # otherwise be missing when that line arrives (its id sits below the watermark, so the parent check can't hold it).
+    "SaleOrderDtls": "[item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
+    # the open order book, same scope. no item id on this report, filter by item code
+    "SocPendingDetails": "[ITEMCODE] IN (SELECT i.item_code FROM [CRMPROD].[dbo].[ItemMasters] i JOIN [CRMPROD].[dbo].[ItemCategories] c ON c.item_id = i.item_id WHERE c.segment1 = 'Performance Chemicals')",
     # ~68k of 169k
     "BiPoDetails": "[inventory_item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
     # ~225k of 324k

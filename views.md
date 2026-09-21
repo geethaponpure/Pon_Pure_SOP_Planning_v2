@@ -11,22 +11,13 @@ Two kinds:
 
 Built views are documented in `views_applied.md` (what each view is, columns, rules, diagrams). This file is only the to-do list.
 
-Status: item_master, customer_master done. Next: sales_order_soc.
+Status: item_master, customer_master, sales_order_soc done. Next: dispatch_master.
 
 ## customer_master - built, see `views_applied.md`
 
 ## item_master - built, see `views_applied.md`
 
-## sales_order_soc
-
-| Table | What the view has to do | Why not at load |
-| --- | --- | --- |
-| SaleOrderDtls | `status` is NOT an open order flag: 900k lines say OPEN, crm never closes them. The open book is `SocPendingDetails`. Views must not use `status` for "pending" | the column is loaded as is, informational |
-| SaleOrderHdrs | `quotation_date` has junk (year 0001, 2027): use `po_received_date` for any date axis | junk kept in the mirror |
-| SaleOrderHdrs | `trans_type_name` filter for "real sales": exclude Stock Transfer / Sample / Cogt per report | which types count is a business rule |
-| SocPendingDetails | today's open book, one `syncdate`. If history is ever wanted, a nightly copy into a history table (accumulate) | replace mode was chosen at load |
-| SocPendingDetails | `itemcode` → item: `item_code` is not unique in ItemMasters (6 dups). Join through a dedup of ItemMasters on item_code (latest item_id) | no fk possible |
-| SaleOrderHdrs / Dtls | `quotation_line_id` / `quotationdtl_line_id` → quotes: soft, only PC quotes from 2021 are loaded | orders are not PC filtered, quotes are |
+## sales_order_soc - built, see `views_applied.md`
 
 ## dispatch_master
 
@@ -40,6 +31,8 @@ Status: item_master, customer_master done. Next: sales_order_soc.
 | Schedules | otif: `customer_requested_date` vs `DispatchDetails.schedule_date` per schedule line | |
 | SocCancelDetails | `close_reason_id` → `Reasons.header_id` (303 row lookup, not loaded yet). `status_id` has no master | add Reasons, then a join |
 | SocCancelDetails | net open book = SocPending minus cancelled remaining qty where the cancel is approved (`status_id = 6`) | |
+| Schedules / DispatchDetails | **schedule-line open book** (crm's own forecasting feed, `SpSyncSocPendingOrder_Forecasting`): line OPEN, balance = `schedule_quantity − dispatched` > 0, not GROUP COMPANY, **no pending cancellation** (`SocCancelDetails.status_id not in 6, 7`), effective date = `reschedule_date` when set else `schedule_date`. This is `is_demand` on the open book | crm computes it into `SocPendingAlertToBUSINESS_FORECASTING`; we rebuild it from the two tables |
+| DispatchDetails | "dispatched" must mean **confirmed**: `despatch_confirm_flag = 'Y'` and note not cancelled (`despatch_status_id <> 4`) - crm's `fn_SOCScheduleQty` rule. Check the flag is loaded on `Dispatches` | |
 
 ## quotation_master
 

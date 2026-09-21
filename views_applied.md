@@ -299,3 +299,135 @@ SELECT branch_source, count(*) FROM dim_customer_site GROUP BY 1;
 -- home circle vs the circle oracle holds: should agree on almost all
 SELECT home_mc_code = oracle_mc_code AS agree, count(*) FROM dim_customer WHERE oracle_mc_code IS NOT NULL GROUP BY 1;
 ```
+
+---
+
+## sales_order_soc  `03_sales_order_soc.sql`
+
+```text
+  v_transaction_type ─────────┐          (what each crm transaction type means - decided once,
+                              │           reused by the dispatch and quotation views later)
+  SaleOrderHdrs ──────────────┼──► fact_order_line      every order line for PC products
+  SaleOrderDtls ──────────────┘
+
+  SocPendingDetails ─────────────► fact_open_order      the open order book as crm computed it
+```
+
+### v_transaction_type - what a transaction type means
+
+| | |
+| --- | --- |
+| one row per | crm transaction type |
+| join on | `upper(trim(trans_type_name))` |
+| answers | is this line a sale, is it demand a planner should count |
+
+| kind | crm types | `is_sale` | `is_demand` |
+| --- | --- | --- | --- |
+| sale | Taxable Intra / Inter State, **Cogt** Intra / Inter, COGT Taxable | yes | yes |
+| export sale | Export, SEZ to DTA, SEZ to SEZ | yes | yes |
+| import pass-through | BTS (Bond Transfer Sales), HSS (High Seas Sales) | yes - invoiced revenue | no - never touches branch stock |
+| sample | Sample | no | no |
+| stock transfer | Stock Transfer Intra / Inter | no | no |
+| job work | Job Work | no | no |
+| unknown | anything else (a few blank rows) | no | no |
+
+- `Cogt` (confirmed with the crm team) is CCL's own manufactured textile chemicals sold to customers - a normal sale.
+- on the facts both flags are switched **off** when the branch is GROUP COMPANY; that becomes `is_inter_company`.
+
+### fact_order_line - every order line
+
+| | |
+| --- | --- |
+| one row per | order line, Performance Chemicals products only (load filter) |
+| join on | `item_id` → dim_item · `customer_id` → dim_customer · `ship_to_site_use_id` / `bill_to_site_use_id` → dim_customer_site · `collector_id` → dim_collector · `order_id` → fact_open_order |
+| answers | what was ordered, by whom, from which branch, is it a sale, what is it worth |
+
+| column | meaning | example |
+| --- | --- | --- |
+| `line_id`, `order_id` | the line and its order | |
+| `order_date` | the PO received date (junk years fall back to the creation day) | 2026-03-14 |
+| `order_created_at`, `customer_po_ref`, `customer_po_date` | order header details | |
+| `customer_id`, `bill_to_site_use_id`, `ship_to_site_use_id`, `collector_id` | who and where. The ship-to site is the demand location | |
+| `organization_id`, `currency`, `trading_manufacture`, `is_back_to_back` | header flags | 101, INR, Trading, false |
+| `quotation_hdr_id`, `quotation_number`, `quotation_line_id` | the quote it came from (soft - only PC quotes since 2021 are loaded) | |
+| `transaction_type`, `order_kind` | crm's type and what it means | Cogt - Intra State, sale |
+| `is_sale`, `is_demand`, `is_inter_company`, `is_cogt` | the flags reports filter on | true, true, false, true |
+| `item_id` | the product | |
+| `sale_category`, `is_ecommerce` | Intact / Repack / Bulk / E-Commerce / Customer Barrel, spelling cleaned | Intact, false |
+| `uom`, `quantity` | the measure (Kgs / KGS / LITER folded) | KG, 200 |
+| `unit_price`, `has_price` | tax exclusive; 0 on inter company and marketplace lines | 105.89, true |
+| `line_value` | `quantity × unit_price`, empty when unpriced | 21,178 |
+| `line_value_crm` | crm's `total_sales_price`, reference only | |
+| `delivery_from_id`, `inventory_org_id`, `delivery_date` | delivery point, warehouse, promised date | |
+| `status_crm` | OPEN or Closed - OPEN only means nobody closed it | OPEN |
+
+**Rules baked in**
+
+```text
+  line value
+       │
+  unit_price > 0 ? ──no──► line_value = empty      (inter company / marketplace - crm never has the price)
+       │
+      yes ──► quantity × unit_price  (tax exclusive)
+              crm's total_sales_price is NOT used: tax inclusive on some screens, stale on edited lines
+```
+
+```text
+  is this a sale / demand ?
+       │
+  branch = GROUP COMPANY ? ──yes──► is_inter_company = true, is_sale = false, is_demand = false
+       │
+      no ──► from the transaction type (table above)
+```
+
+- `status_crm = OPEN` is **not** the open book - hundreds of thousands of delivered lines are still OPEN in crm. The open book is `fact_open_order`.
+- the value of an order is booked value; invoiced revenue lives in crm's invoice table (`PureGPReports`, not loaded).
+
+### fact_open_order - the open order book
+
+| | |
+| --- | --- |
+| one row per | open schedule line, as crm's daily job computed it (`SocPendingDetails`) |
+| join on | `order_id` + `item_id` → fact_order_line (the report has no line id) · `customer_hdr_id` / `customer_id` → dim_customer · `item_id` → dim_item · `collector_id` → dim_collector · `mc_code` → dim_market_circle · `inventory_org_id` → InventoryOrgs |
+| answers | what is still to be delivered, for whom, from where, by when |
+
+| column | meaning | example |
+| --- | --- | --- |
+| `order_id`, `order_date`, `schedule_date`, `customer_requested_date` | the order and its dates | |
+| `reschedule_date`, `reschedule_reason` | when it was moved and why | |
+| `customer_hdr_id`, `customer_id`, `customer_number` | the customer (resolved from the account number) | |
+| `collector_id`, `mc_code` | branch and circle | |
+| `item_id`, `item_code` | the product (resolved from the code) | |
+| `sale_category`, `transaction_type`, `order_kind`, `is_sale`, `is_demand`, `is_inter_company` | same flags as fact_order_line | |
+| `uom`, `ordered_qty`, `scheduled_qty`, `dispatched_qty`, **`pending_qty`** | the quantities; pending is the one that matters | KG, 1000, 1000, 400, 600 |
+| `unit_price`, `has_price`, `pending_value` | `pending_qty × unit_price`, empty when unpriced | |
+| `dispatch_pct` | crm's dispatched %, bulk General Chemicals lines only | |
+| `inventory_org_code`, `inventory_org_id` | the warehouse (resolved from the code) | |
+| `as_of` | when crm computed this open book | |
+
+**How crm builds it (daily, `SPPendingOrderDtlforUsers`)**
+
+```text
+  order line status = OPEN
+       │
+       ▼
+  balance after schedules and dispatches > 0      (bulk lines count as done at 95%)
+       │
+       ▼
+  one row per open schedule line  ──► SocPendingDetails  ──► we copy it every run, we do not recompute it
+```
+
+- a large part of the open book is inter company (`is_inter_company`): real stock movement, no price, not customer demand.
+- the schedule-line version built from `Schedules − DispatchDetails` (crm's projection rule) comes with the dispatch cluster.
+
+**Quick checks** (pgAdmin, after `SET search_path TO ponpure_planner;`)
+
+```sql
+SELECT order_kind, is_sale, is_demand, count(*) FROM fact_order_line GROUP BY 1, 2, 3 ORDER BY 4 DESC;
+
+-- demand this year by branch
+SELECT collector_id, sum(quantity) FROM fact_order_line WHERE is_demand AND order_date >= date_trunc('year', current_date) GROUP BY 1 ORDER BY 2 DESC LIMIT 10;
+
+-- the open book: pending quantity by kind
+SELECT order_kind, is_inter_company, count(*), sum(pending_qty) FROM fact_open_order GROUP BY 1, 2 ORDER BY 3 DESC;
+```
