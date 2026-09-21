@@ -572,3 +572,75 @@ FROM fact_schedule_line WHERE is_demand AND effective_date >= date_trunc('year',
 
 SELECT approval_status, reason, count(*) FROM fact_order_cancellation GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 10;
 ```
+
+---
+
+## quotation_master  `05_quotation_master.sql`
+
+```text
+  QuotationHdrs ──────┐
+  QuotationDtls ──────┤
+  QuotationStatus ────┼──► fact_quote_line (materialized)   every quote line, conversion resolved
+  v_transaction_type ─┤
+  SaleOrderDtls ──────┘   (which order line came from which quote line)
+```
+
+### fact_quote_line - every quote line, and what became of it  (materialized)
+
+| | |
+| --- | --- |
+| one row per | quotation line, Performance Chemicals products since 2021 |
+| join on | `item_id` → dim_item · `customer_id` → dim_customer · `ship_to_site_use_id` → dim_customer_site · `collector_id` → dim_collector · `mc_code` → dim_market_circle · `order_line_id` → fact_order_line |
+| answers | what was quoted, to whom, at what price; did it become an order; what is still open |
+
+| column | meaning | example |
+| --- | --- | --- |
+| `line_id`, `quote_id`, `quote_number` | the line and its quote | |
+| `quote_date`, `quote_created_at`, `quote_updated_at`, `revised_count` | dates and revisions | |
+| `is_prequote`, `is_back_to_back`, `quote_creation_type` | header flags | |
+| `customer_id`, `bill_to_site_use_id`, `ship_to_site_use_id`, `collector_id`, `mc_code` | who and where | |
+| `organization_id`, `currency` | legal entity, currency | |
+| `transaction_type`, `order_kind`, `is_sale`, `is_demand`, `is_inter_company`, `is_cogt` | the same flags as orders and dispatches | |
+| `quote_status`, `quote_status_id` | the state of the quote: Open / WaitingForApproval / Approved / Confirmed / Rejected / Closed ... | Closed |
+| `is_close_initiated` | someone started closing it | |
+| `line_status`, `line_status_id` | the line's own status - only meaningful inside a live quote | Confirmed |
+| `is_live` | not Closed / Rejected / Cancelled | false |
+| **`is_open_pipeline`** | crm's rule: quote and line Confirmed, no order yet | false |
+| **`is_converted`**, `order_id`, `order_line_id`, `order_line_count` | became an order? which one? | true |
+| `days_to_convert` | quote date → first order, in days | 0 |
+| `item_id`, `sale_category`, `uom` | the product, Intact / Repack / Bulk .., unit (folded) | |
+| `quantity`, `unit_price`, `has_price`, `line_value`, `line_value_crm` | the measure; value = qty × price, empty when unpriced | |
+| `discount_pct`, `discount_value`, `tax_pct` | pricing details | |
+| `delivery_date`, `delivery_from_id`, `inventory_org_id` | the delivery quoted | |
+
+**What a quote is here**
+
+```text
+  quote raised ──► Confirmed ──► order raised the same day ──► quote Closed
+                       │
+                       └── no order (yet) ──► is_open_pipeline     (crm's projection input)
+
+  Rejected / ReferredBack / Open / Approved ──► is_live, not in the pipeline until Confirmed
+```
+
+- `Closed` = converted. There is no "lost" status: a quote that never converted stays `Confirmed` or `Approved`.
+- median `days_to_convert` is 0 - quotes are raised with the order. Conversion rate by product or branch is `count(is_converted) / count(*)`.
+- `is_open_pipeline` follows `FN_PCProjection_GetConfirmedQuotationQuantity` exactly: header Confirmed **and** line Confirmed **and** no order on the quote.
+- `line_status` stays `Confirmed` after conversion - use `quote_status` for the state.
+- the header's flags (`is_sale` / `is_demand` / `is_inter_company`) come from `v_transaction_type`, like everywhere else.
+
+**Quick checks** (pgAdmin, after `SET search_path TO ponpure_planner;`)
+
+```sql
+-- must agree with crm's projection input: confirmed quotes with no order
+SELECT count(DISTINCT quote_id), sum(quantity) FROM fact_quote_line WHERE is_open_pipeline;
+
+-- open pipeline by branch, customer demand only
+SELECT collector_id, count(DISTINCT quote_id), sum(quantity) FROM fact_quote_line
+WHERE is_open_pipeline AND is_demand GROUP BY 1 ORDER BY 3 DESC LIMIT 10;
+
+-- conversion rate by month
+SELECT date_trunc('month', quote_date)::date AS month,
+       round(100.0 * count(*) FILTER (WHERE is_converted) / count(*), 1) AS converted_pct
+FROM fact_quote_line WHERE is_demand AND quote_date >= date_trunc('year', current_date) GROUP BY 1 ORDER BY 1;
+```

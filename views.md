@@ -11,7 +11,7 @@ Two kinds:
 
 Built views are documented in `views_applied.md` (what each view is, columns, rules, diagrams). This file is only the to-do list.
 
-Status: item_master, customer_master, sales_order_soc, dispatch_master done. Next: quotation_master.
+Status: item_master, customer_master, sales_order_soc, dispatch_master, quotation_master done. Next: business_plan.
 
 ## customer_master - built, see `views_applied.md`
 
@@ -21,14 +21,7 @@ Status: item_master, customer_master, sales_order_soc, dispatch_master done. Nex
 
 ## dispatch_master - built, see `views_applied.md`
 
-## quotation_master
-
-| Table | What the view has to do | Why not at load |
-| --- | --- | --- |
-| QuotationHdrs | pipeline = `status_id` in Open / Approved / Confirmed (1, 3, 6). 96% are Closed = converted | |
-| QuotationHdrs | `customer_hdr_id` is 0 / null on 92% - use `customer_id` | |
-| QuotationDtls | conversion rate: quote line → `SaleOrderDtls.quotationdtl_line_id` (90% soft link) | |
-| QuotationDtls | `status_id` 0 on 536 rows loaded as null | |
+## quotation_master - built, see `views_applied.md`
 
 ## business_plan
 

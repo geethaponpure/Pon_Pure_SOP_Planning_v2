@@ -304,7 +304,11 @@ Things to know:
 - `customer_hdr_id` on the header is 0 or null on 92% of rows - use `customer_id`.
 - ~60 columns on `QuotationHdrs` are export-only (98% null): ports, containers, fob values, bank, agent. Not loaded.
 - `QuotationDtls.status_id` is 0 on 536 rows; loaded as null.
-- `close_status_id` (0 / 1 / 2) has no master table in crm.
+- `close_status_id` (0 / 1 / 2) has no master table in crm: 0 = not closing, 1 = close initiated, 2 = close approved (from `SP_OpenQuotation_List`).
+- **A quote is a pre-order, not a pipeline.** The median time from quote date to order is 0 days; `Closed` means converted (an order points at the quote on nearly all of them). A quote that never converted stays `Confirmed` or `Approved` - there is no "lost" status. The header status is the state of the quote; the line status stays `Confirmed` after conversion, so it only says something inside a live quote.
+- **crm's open pipeline rule** (`FN_PCProjection_GetConfirmedQuotationQuantity`, the PC Projection module): quote `Confirmed` and line `Confirmed` and no order raised on the quote. `fact_quote_line.is_open_pipeline` mirrors it.
+- Quotes carry `trans_type_name` like orders, so `v_transaction_type` applies (samples, stock transfers and the GROUP COMPANY branch are a fifth of quotes). `unit_price = 0` on a third of lines - the same inter company and marketplace populations as on orders.
+- A quote line can be ordered more than once (`order_line_count`); the views keep the first order line as the link.
 
 ---
 
