@@ -45,7 +45,9 @@ CRM_TABLES = {
         "CustomerSites",                    # Stores the individual locations/sites of customers.
         "MarketCircles",                    # Defines the market/sales circles assigned to collectors.
         "Collectors",                       # Person responsible for customers/collections
-        # "CustomerClassificationHeaders", 
+        "tempcustomers",                    # the lead's details: branch, circle, industry segment (leads have no sites)
+        "ArCustomers",                      # oracle's customer record: legal form, industrial segment, division
+        # "CustomerClassificationHeaders",
         # "CustomerClassificationDetails", 
         # "Companies", 
         # "PaymentTerms"

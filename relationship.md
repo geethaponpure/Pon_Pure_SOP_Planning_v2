@@ -2,12 +2,14 @@
 
 ## CRM Customer_master Data Model
 
-The CRM data model consists of four main tables:
+The CRM data model consists of six tables:
 
 - `Collectors`
 - `MarketCircles`
 - `CustomerSites`
 - `CustomerMasters`
+- `tempcustomers` (the lead's details: branch, circle, industry segment - leads have no sites)
+- `ArCustomers` (oracle's customer record: legal form, industrial segment, division, oracle's circle)
 
 The logical business relationship is:
 
@@ -28,6 +30,31 @@ MarketCircles
        │ collector_id
        ▼
 Collectors
+```
+
+Things to know:
+
+- **A customer is either a real customer or a lead.** A real customer has an oracle `customer_id`, sites, and a row in `ArCustomers`. A lead has none of those: its branch, circle, industry segment and address live in `tempcustomers`. About half of `CustomerMasters` are leads; every blank `status` is a lead.
+- **Territory belongs to the site, not the customer.** A customer's sites can sit in several circles and even several branches. crm's own "which branch is this customer in" rule (`FN_Customer_GetCollectorName` / `FN_Customer_GetMCCode`): a real customer → any active BILL_TO site's `collector_id` / `mc_code` (`TOP 1`, unordered); a lead → `tempcustomers`. The bill-to and ship-to circles agree on almost every order, and the order's branch is the ship-to site's branch on 96%.
+- **`CustomerSites.collector_id` is the site's own branch** (set on bill-to sites, null on ship-to). It usually equals the circle's branch, but not always: retired sites are parked on a branch named `OBSOLETE` (13085) while their circle still points at the real branch, and some sites in the `unknown` circle still carry a real branch. Views take the site's branch first, the circle's as fallback.
+- **`primary_flag` is not one per customer** - a customer can have many primary active bill-to sites (almost always in the same circle). Any "home site" needs a tie break.
+- **Marketplace channels are customers with thousands of sites** (`SALES THROUGH FLIPKART`, `... AMAZON`, `FREE SAMPLE SALES`): every consumer address became a site. Real, active, ordering.
+- **`customergroup` is not a group** - nearly unique per customer, a second name.
+- **`MarketCircles.region`** is clean only for SOUTH / WEST / NORTH / EAST; the international circles (`int1-01` ..), `job01`, `map01`, `kan01` carry `'1'`, blank or null. `ECO` is e-commerce.
+- **34 branches own no circle**: export and special channels (INTERNATIONAL, EXPORTS, country branches, OBSOLETE, CONSIGNMENT ..), the GROUP COMPANY channel (huge order count, not a territory - crm's own sales rules exclude it), and retired or never used branch records (DELHI, MUMBAI, TIRUPPUR-I/II .. with old orders; DELHI-NCR, RAJKOT .. with none). All 129 are kept because history points at them.
+- `ArCustomers.attribute2` is the circle oracle holds for the customer (upper case), `attribute4` the industrial segment (TRADER, PAINT & COATINGS, TEXTILE, PHARMA ..), `attribute6` the division (General Chemicals / Performance Chemicals / NPD / Packing Materials).
+
+Links to the master tables:
+
+```text
+CustomerSites.header_id                  → CustomerMasters.header_id
+CustomerSites.mc_code                    → MarketCircles.mc_code                    ('unknown' when blank / no match)
+CustomerSites.collector_id               → Collectors.collector_id                  (bill-to sites only, null on ship-to)
+MarketCircles.collector_id               → Collectors.collector_id
+tempcustomers.header_id                  → CustomerMasters.header_id                (unique: 27 leads had two rows, latest kept; rows of deleted leads dropped)
+tempcustomers.collector_id               → Collectors.collector_id                  (null when crm has 0)
+tempcustomers.market_circle              → MarketCircles.mc_code                    (lower / trim, 'unknown' when blank)
+ArCustomers.customer_id                  → CustomerMasters.customer_id              (unique, one per real customer)
 ```
 
 ---
@@ -627,6 +654,7 @@ Things to know:
 | 1 | ItemCategories | `header_id` | upsert | PC only | drop orphans | – | – |
 | 1 | PurchaseRequisitionPtoPts | `Header_id → header_id` | incremental | – | – | – | – |
 | 1 | UserRoles | `line_id` (unique user_id) | snapshot | – | drop row if user / role missing; keep latest per user | – | – |
+| 1 | ArCustomers | `header_id` (unique customer_id) | upsert | – | drop row if customer missing | – | – |
 | 1 | UserCollectorMappings | `header_id` (unique user_id + collector_id) | snapshot | – | drop copies of a pair (keep lowest header_id); drop row if user / branch missing | – | – |
 | 1 | UserCustomerMappings | `header_id` (unique user_id + customer_hdr_id) | snapshot | – | drop copies of a pair (keep lowest header_id); drop row if user / customer missing | – | – |
 | 1 | CollectorMailMappings | `header_id` (unique collector_id) | snapshot | – | drop row if branch missing; the six chain user ids → NULL if missing | – | – |
@@ -634,11 +662,12 @@ Things to know:
 | 1 | InventoryOrgs | `inventory_org_id` | upsert | – | collector `0` → NULL | `unknown` (-1) | BiStockDetail, SaleOrderDtls, Dispatches, Schedules, SocCancelDetails, DispatchDetails, QuotationDtls, BiPoDetails, PurchaseRequisitionHdrs |
 | 2 | BiPoDetails | `id` (ours) | snapshot | PC item | – | – | – |
 | 2 | PurchaseRequisitionHdrs | `header_id` | snapshot | – | collector `0` → NULL, supplier `0` → NULL | – | PurchaseRequisitionDtls |
-| 2 | CustomerSites | `line_id` | upsert | – | lower/trim + `unknown`, drop duplicate site_use_id | `unknown` (-1) | SaleOrderHdrs, Dispatches, Schedules, … |
+| 2 | CustomerSites | `line_id` | upsert | – | lower/trim + `unknown`, drop duplicate site_use_id, site branch → NULL if missing | `unknown` (-1) | SaleOrderHdrs, Dispatches, Schedules, … |
 | 2 | BiStockDetail | `header_id` | incremental, **large** (pk ranges, 4 workers) | trans_date ≥ 2024 and PC item code | warehouse not in master → `-1`; `item_id` derived from item_code (latest ItemMasters id per code), `-1` if none | – | – |
 | 2 | ItemInventoryOrgMappings | `header_id` (unique item_id + inventory_org_id) | snapshot | PC item | drop duplicate pair (keep lowest header_id); item / warehouse not in master → `-1` | – | – |
 | 2 | BiCollectorInventoryOrgMapping | `header_id` (unique collector_id + inventory_org_id) | snapshot | – | drop re-inserted pairs (keep lowest header_id); drop row if collector / warehouse not in master | – | – |
 | 2 | UserMarketCircleMappings | `header_id` | snapshot | – | drop row if user / circle missing (no dedupe: repeated pairs are validity history) | – | – |
+| 2 | tempcustomers | `line_id` (unique header_id) | snapshot | – | keep latest row per lead; drop row if lead missing; branch `0` → NULL; circle lower/trim + `unknown` | – | – |
 | 3 | PurchaseRequisitionDtls | `line_id` | snapshot | – | customer / collector `0` → NULL, po_line_id `0` → NULL, blank header_id if not loaded | – | – |
 | 3 | SaleOrderHdrs | `header_id` | incremental | – | missing site → `-1` on bill_to / ship_to | – | SaleOrderDtls, SocPendingDetails, Dispatches, Schedules, SocCancelDetails, DispatchDetails |
 | 3 | QuotationHdrs | `header_id` | snapshot | headers the loaded QuotationDtls point at | customer / sites `0` → `-1`, mc_code lower/trim + `unknown` | – | QuotationDtls |

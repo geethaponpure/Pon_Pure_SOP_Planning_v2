@@ -10,7 +10,7 @@
 UPSERT_TABLES = {"Collectors", "MarketCircles", "CustomerMasters", "CustomerSites",
                  "ItemMasters", "ItemCategories", "DeliveryFroms", "QuotationStatus", 
                  "JourneyCalendars", "ApSuppliers", "InventoryOrgs",
-                 "Users", "Roles"}
+                 "Users", "Roles", "ArCustomers"}
 
 
 
@@ -29,7 +29,8 @@ SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules",
                    "BiPoDetails", "PurchaseRequisitionHdrs", "PurchaseRequisitionDtls",
                    "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping",
                    "UserRoles", "UserMarketCircleMappings", "UserCollectorMappings",
-                   "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings"}
+                   "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings",
+                   "tempcustomers"}
 
 
 
@@ -153,6 +154,31 @@ STAGE_FIXES = {
         # crm double inserted one site (1139548). keep the earlier line
         #Same site, same everything, created in the same second
         "DELETE FROM stage a USING stage b WHERE a.site_use_id = b.site_use_id AND a.line_id > b.line_id",
+        # the site's own branch. null on ship-to sites in crm, 0 never seen, safety net for a branch crm no longer has
+        '''UPDATE stage SET collector_id = NULL
+            WHERE collector_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "Collectors" c WHERE c.collector_id = stage.collector_id)''',
+    ],
+
+    "tempcustomers": [
+        # 27 leads have two rows, keep the later one so header_id is unique
+        "DELETE FROM stage a USING stage b WHERE a.header_id = b.header_id AND a.line_id < b.line_id",
+        # a lead crm has deleted (369 rows) -> nothing to attach the details to, drop
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "CustomerMasters" c WHERE c.header_id = stage.header_id)''',
+        # the lead's branch: 0 / gone -> null
+        '''UPDATE stage SET collector_id = NULL
+            WHERE collector_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "Collectors" c WHERE c.collector_id = stage.collector_id)''',
+        # the lead's circle, same spelling rule as mc_code on sites
+        "UPDATE stage SET market_circle = lower(trim(market_circle))",
+        '''UPDATE stage SET market_circle = 'unknown'
+            WHERE market_circle IS NULL OR market_circle = ''
+               OR NOT EXISTS (SELECT 1 FROM "MarketCircles" m WHERE m.mc_code = stage.market_circle)''',
+    ],
+
+    "ArCustomers": [
+        # one row per oracle customer, all match today. a record for a customer we don't have means nothing, drop
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "CustomerMasters" c WHERE c.customer_id = stage.customer_id)''',
     ],
 
     "ItemCategories": [
@@ -417,7 +443,11 @@ PARENT_CHECK = {
     "SocPendingDetails": [("order_no",  "SaleOrderHdrs",   "header_id")],
 
 #-------------------------------------------- customer_master -----------------------------------------------------
-    "CustomerSites":     [("header_id", "CustomerMasters", "header_id")],
+    "CustomerSites":     [("header_id",    "CustomerMasters", "header_id"),
+                          ("collector_id", "Collectors",      "collector_id")],
+    "tempcustomers":     [("header_id",    "CustomerMasters", "header_id"),
+                          ("collector_id", "Collectors",      "collector_id")],
+    "ArCustomers":       [("customer_id",  "CustomerMasters", "customer_id")],
 
 #-------------------------------------------- dispatch_master -----------------------------------------------------
     "Dispatches":      [("sale_order_header_id",     "SaleOrderHdrs",   "header_id"),
@@ -485,9 +515,10 @@ LOAD_LEVELS = [
     ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms",
      "QuotationStatus", "JourneyCalendars", "ApSuppliers", "Users", "Roles"],   # no parents (Users only points at itself)
     ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "InventoryOrgs",
-     "UserRoles", "UserCollectorMappings", "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings"],   # need level 0 (InventoryOrgs -> Collectors, the user mappings -> Users / Roles / Collectors / CustomerMasters)
+     "UserRoles", "UserCollectorMappings", "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings",
+     "ArCustomers"],                                                     # need level 0 (InventoryOrgs -> Collectors, the user mappings -> Users / Roles / Collectors / CustomerMasters)
     ["CustomerSites", "BiPoDetails", "PurchaseRequisitionHdrs", "BiStockDetail",
-     "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping", "UserMarketCircleMappings"],   # need MarketCircles / InventoryOrgs. BiStockDetail is large: 4 inner workers
+     "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping", "UserMarketCircleMappings", "tempcustomers"],   # need MarketCircles / InventoryOrgs. BiStockDetail is large: 4 inner workers
     ["SaleOrderHdrs", "QuotationHdrs", "SCBusinessMonthlyPlanHdrs", "PurchaseRequisitionDtls"],   # need Collectors, CustomerMasters, CustomerSites (+ MarketCircles, QuotationStatus) / PurchaseRequisitionHdrs
     ["SaleOrderDtls", "SocPendingDetails", "Dispatches", "QuotationDtls", "SCBusinessMonthlyPlanDtls"],   # need the level 3 headers (+ ItemMasters / MarketCircles / sites)
     ["Schedules", "SocCancelDetails", "SCBusinessMonthlyPlanJCDtls"],    # level 5, need SaleOrderDtls / SCBusinessMonthlyPlanDtls

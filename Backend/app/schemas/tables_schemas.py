@@ -64,6 +64,7 @@ TABLES_COLUMNS = {
         "line_id",              # pk
         "header_id",            # -> CustomerMasters.header_id
         "mc_code",              # -> MarketCircles.mc_code. this is the real link, markert_cirlce_id is always null
+        "collector_id",         # -> Collectors, the site's own branch. set on bill-to sites, null on ship-to. crm's customer -> branch rule (FN_Customer_GetCollectorName) reads this. 13085 = OBSOLETE, retired sites are parked there
         "cust_acct_site_id",    # SaleOrderHdrs.CUST_ACCT_SITE_ID points here
         "status",               # A / I
         "site_use_id",          # bill_to_site_id / ship_to_site_id in orders, quotes and plans point here
@@ -95,6 +96,36 @@ TABLES_COLUMNS = {
         "creation_date",
         "last_update_date",
         "IsGroupCompanyCollector",  # only one row, internal group company
+    ],
+
+    "tempcustomers": [            # the lead's details. a lead has no oracle id and no sites, its branch / circle / segment live here. snapshot, level 2
+        "line_id",              # pk
+        "header_id",            # -> CustomerMasters.header_id, the lead. unique after stage (27 leads have 2 rows, latest kept). rows for deleted leads dropped
+        "collector_id",         # -> Collectors, the lead's branch. 0 -> null
+        "market_circle",        # -> MarketCircles.mc_code, lower / trim, 'unknown' when blank. market_circle_id is stale (86% match), not loaded
+        "industry_segment",     # ENGINEERING INDUSTRY / PHARMA / PAINT & COATINGS .. blank on some
+        "business_type",        # PRIVATE LIMITED / SOLE PROPRIETORSHIP ..
+        "city",
+        "state",
+        "country",
+        "creation_date",
+        "last_update_date",
+        # skipped: collector (name, same as the id), market_circle_id / industry_segment_id / business_type_id (stale or no master),
+        #          contact_person_name / contact_number / contact_email_id (pii), address1 / 2 / postal_code / latitude / longitude, created_by / last_updated_by
+    ],
+
+    "ArCustomers": [              # oracle's customer record, one per real customer. the customer level classification. upsert, level 1
+        "header_id",            # pk
+        "customer_id",          # -> CustomerMasters.customer_id, unique, 100% match
+        "customer_class_code",  # legal form: SOLE PROPRIETORSHIP / PRIVATE LIMITED / PARTNERSHIP / LIMITED / LLP .. null on 14%
+        "customer_type",        # R = regular, I = internal (a handful)
+        "attribute2",           # the market circle oracle holds for the customer, upper case (ECO1, TEL01 ..). compare with the sites' mc_code in views
+        "attribute4",           # industrial segment: TRADER / PAINT & COATINGS / TEXTILE / PHARMA / PACKAGING .. null on 9%
+        "attribute6",           # division: General Chemicals / Performance Chemicals / NPD / Packing Materials
+        "status",               # A / I
+        "creation_date",
+        "last_update_date",
+        # skipped: 70 oracle columns that are empty or accounting (tax, price list, freight, the other attributes)
     ],
 },
 

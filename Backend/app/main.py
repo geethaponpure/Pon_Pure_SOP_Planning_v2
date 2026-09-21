@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from .core.database import Base, get_db, engine
 from .models.metadata import crm_sync_table
-from .models.customer_master import CustomerMasters, CustomerSites, Collectors, MarketCircles
+from .models.customer_master import CustomerMasters, CustomerSites, Collectors, MarketCircles, TempCustomers, ArCustomers
 from .models.items_master import ItemCategories, ItemMasters, PurchaseRequisitionPtoPts
 from .models.sales_order_soc import SaleOrderHdrs, SaleOrderDtls, SocPendingDetails
 from .models.dispatch_master import DeliveryFroms, Dispatches, DispatchDetails, Schedules, SocCancelDetails

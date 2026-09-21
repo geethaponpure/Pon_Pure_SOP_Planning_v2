@@ -8,6 +8,7 @@ from app.core.database import get_postgres_cursor, get_sql_server_cursor
 from app.schemas.tables_schemas import TABLES_COLUMNS
 from app.core.constants import SQL_TO_PG_TYPES, CRM_TABLES
 from app.core.config import settings
+from app.repositories.views import refresh_materialized_views
 from app.repositories.utils import (SOURCE_FILTERS, SEED_ROWS, STAGE_FIXES, LOAD_LEVELS,
                                    SNAPSHOT_TABLES, UPSERT_TABLES, PARENT_CHECK,
                                    LARGE_TABLES, RANGE_ROWS, INNER_WORKERS, DERIVED_COLUMNS)
@@ -17,6 +18,12 @@ from app.repositories.utils import (SOURCE_FILTERS, SEED_ROWS, STAGE_FIXES, LOAD
 SRC = "[CRMPROD].[dbo]"
 CHUNK = 50_000 # rows per COPY batch (bounds memory)
 NULL = r"\N" # NULL marker so NULL and '' stay different
+
+# the crm link drops now and then (10054 closed by the remote host, 10060 timed out). a long read is the
+# one that gets hit. these are the sqlstates / codes that mean "the link", not "the data or the sql".
+LINK_ERRORS = ("08S01", "08001", "HYT00", "10054", "10060")
+RETRIES = 3         # attempts per table
+RETRY_WAIT = 20     # seconds between them
 
 #==================================================================================
 
@@ -193,8 +200,31 @@ def load_stage(pg_cur, ss_cur, table, columns, pk_clm, upsert=False):
 
 
 
+def is_link_error(e):
+    """Did the crm link drop, as opposed to a data or sql error?"""
+    msg = str(e)
+    return any(code in msg for code in LINK_ERRORS)
+
+
+
 def sync_table(table, columns, category):
-    """This function is used to fetch data from CRM to PostgreSQL."""
+    """One table, retried when the crm link drops. Every attempt is one transaction on fresh connections,
+    so a failed attempt leaves nothing behind and a retry is safe in every mode (snapshot, upsert, incremental).
+    Anything that is not a link error fails straight away."""
+
+    for attempt in range(1, RETRIES + 1):
+        try:
+            return _sync_table_once(table, columns, category)
+        except Exception as e:
+            if not is_link_error(e) or attempt == RETRIES:
+                raise
+            print(f"[{category}] {table}: crm link dropped, retry {attempt}/{RETRIES - 1} in {RETRY_WAIT}s")
+            time.sleep(RETRY_WAIT)
+
+
+
+def _sync_table_once(table, columns, category):
+    """One attempt at one table: crm -> stage -> fixes -> table, one transaction."""
 
     ss, ss_cur = get_sql_server_cursor()
     pg, pg_cur = get_postgres_cursor()
@@ -462,6 +492,14 @@ def export_table_from_sql_to_psg(workers=4):
                     print(f"[{category}] {table}: {job.result()} rows = [Time]:{(end-start)/60:.2f}mins")
                 except Exception as e:
                     print(f"[{category}] {table}: FAILED -> {e}")
+
+    # the materialized views hold data, so they only see this run once refreshed (plain views need nothing)
+    pg, pg_cur = get_postgres_cursor()
+    try:
+        refresh_materialized_views(pg_cur)
+        pg.commit()
+    finally:
+        pg.close()
 
 
 

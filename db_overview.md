@@ -26,6 +26,8 @@ The customers, the places we deliver to and bill, and the sales territories abov
 - **CustomerSites** - the customers' billing and delivery addresses.
 - **MarketCircles** - the sales circles (territories) and their regions.
 - **Collectors** - the branches.
+- **tempcustomers** - the leads' details: branch, sales circle, industry segment, address (a lead has no sites yet).
+- **ArCustomers** - Oracle's record of each real customer: legal form, industrial segment, division.
 
 ## 3. sales_order_soc - what customers have ordered
 

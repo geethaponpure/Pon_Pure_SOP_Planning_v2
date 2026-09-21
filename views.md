@@ -11,16 +11,9 @@ Two kinds:
 
 Built views are documented in `views_applied.md` (what each view is, columns, rules, diagrams). This file is only the to-do list.
 
-Status: item_master done. Next: customer_master.
+Status: item_master, customer_master done. Next: sales_order_soc.
 
-## customer_master
-
-| Table | What the view has to do | Why not at load |
-| --- | --- | --- |
-| CustomerSites | `dim_customer_site`: one row per `site_use_id` with customer, circle, region, collector flattened (site → mc_code → MarketCircles → Collectors) | the tool needs one hop, the raw chain is three |
-| CustomerMasters | `dim_customer`: one row per customer with a "home" circle / collector. Rule: primary active BILL_TO site; 174 customers still tie, take the latest | territory belongs to the site, a customer level answer is a convention |
-| CustomerMasters | status filter: `status = 'A'` vs `status <> 'I'` - 14% are null or blank. pick one, document it | either is defensible, the load must not decide |
-| CustomerSites | `mc_code = 'unknown'` rows (2,047): show as an "unknown circle" bucket or exclude per report | visible bucket was the choice, reports decide |
+## customer_master - built, see `views_applied.md`
 
 ## item_master - built, see `views_applied.md`
 
