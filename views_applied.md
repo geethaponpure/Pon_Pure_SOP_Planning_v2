@@ -20,7 +20,7 @@ The views that are built and live. One section per cluster. `views.md` keeps the
 | where | `Backend/app/views/<nn>_<cluster>.sql` - one file per cluster |
 | when | every api start, right after the tables (`app/repositories/views.py`) |
 | how | `DROP VIEW ... CASCADE` + `CREATE VIEW` - a change never breaks a restart |
-| materialized | a view that is slow to compute is made `MATERIALIZED` (it holds its rows): rebuilt at api start like the others, and refreshed at the end of every etl run. Marked **(materialized)** below |
+| materialized | a view that is slow to compute is made `MATERIALIZED` (it holds its rows): rebuilt at api start like the others, and refreshed at the end of every etl run - in the order the files define them, so a view never reads a stale one it depends on. Marked **(materialized)** below |
 | names | `dim_*` one row per thing · `fact_*` events and measures · `v_*` helpers |
 | comments | every view and column has a `COMMENT ON` in plain language - hover a column in pgAdmin, or the ai agent reads it from the catalog |
 | pgAdmin | `SET search_path TO ponpure_planner;` once, then view names need no quotes |
@@ -643,4 +643,360 @@ WHERE is_open_pipeline AND is_demand GROUP BY 1 ORDER BY 3 DESC LIMIT 10;
 SELECT date_trunc('month', quote_date)::date AS month,
        round(100.0 * count(*) FILTER (WHERE is_converted) / count(*), 1) AS converted_pct
 FROM fact_quote_line WHERE is_demand AND quote_date >= date_trunc('year', current_date) GROUP BY 1 ORDER BY 1;
+```
+
+---
+
+## business_plan - part 1: calendar, actuals, product names, baselines  `06_business_plan.sql`
+
+```text
+JourneyCalendars
+      │
+      ▼
+   dim_jc ───────────────────────────────────────────────┐
+      │                                                  │
+      │                                                  ▼
+fact_dispatch ──► fact_actual_jc (mat.) ───────► v_plan_product_mix
+      │                    │
+      │                    │
+      │                    ├──────────────► fact_forecast_baseline_item (mat.)
+      │                    │
+      │                    └──────────────► fact_forecast_baseline_name (mat.)
+      │
+      │
+SPBusinessPlanActualSales
+      │
+      ▼
+fact_actual_jc_crm (mat.)
+      │
+      └──────────────────────┐
+                             ▼
+fact_actual_jc ─────────► v_actual_bridge
+      │                       │
+      │                       └─ ours vs CRM + gap
+      │
+      │
+ItemMasters + plan tables
+      │
+      ▼
+dim_plan_product (mat.)
+      │
+      └─ product NAME → item(s)
+```
+
+**Two facts that shape everything here**
+
+- crm plans and measures by **product name**, never by item id. Names are matched lower-case and trimmed on both sides.
+- the human plan is a weaker predictor than a naive forecast at cycle grain (see the baselines). The forecast layer is built on actuals history; the plan is a feature and an override, not the engine.
+
+### dim_jc - the cycle calendar
+
+| | |
+| --- | --- |
+| one row per | journey cycle (JC): ~4 weeks, 13 a year, contiguous since 2013; plus the `-1` unknown |
+| join on | `jc_id` |
+| answers | which cycle is a date in, which is current, which was the same cycle last year |
+
+| column | meaning | example |
+| --- | --- | --- |
+| `jc_id`, `jc_name`, `jc_no`, `acc_year` | the cycle | 178, JC7, 7, 2026-2027 |
+| `jc_seq` | running number across all cycles - `n-1` is the previous, `n-13` the same cycle last year | 176 |
+| `jc_start`, `jc_end`, `days`, `year_start`, `year_end` | dates | |
+| `is_current`, `is_completed`, `is_future` | where today falls | |
+| `prev_jc_id`, `next_jc_id`, `same_jc_last_year_id` | the links | |
+
+### fact_actual_jc - what shipped, per cycle  (materialized)
+
+| | |
+| --- | --- |
+| one row per | cycle × product × branch × customer × warehouse × (order kind, inter-company, e-commerce) |
+| join on | `jc_id` → dim_jc · `item_id` → dim_item · `name_key` → dim_plan_product · `collector_id`, `customer_id`, `inventory_org_id` → the dims |
+| answers | how much of a product a branch shipped in a cycle - in whichever universe a report needs |
+
+| column | meaning |
+| --- | --- |
+| `quantity`, `value_inr`, `dispatch_lines` | the measures (confirmed dispatches only) |
+| **`is_demand`** | customer demand: sales and exports, not inter company. **The universe for forecasting** |
+| **`in_crm_universe`** | what crm's plan actuals count: everything invoiced except e-commerce (samples, cogt, group company included) |
+| `is_ecommerce`, `is_sample`, `is_inter_company`, `order_kind` | the flags behind those two |
+
+### fact_actual_jc_crm - crm's own actuals  (materialized)
+
+| | |
+| --- | --- |
+| one row per | cycle × product name × branch × customer, from `SPBusinessPlanActualSales` unpivoted |
+| answers | what crm's plan screens show as "actual" |
+
+- from Oracle invoices: net of returns, e-commerce excluded, **no transaction-type filter**; `value_inr` = crm's lakhs × 100,000.
+
+### v_actual_bridge - ours vs theirs
+
+| | |
+| --- | --- |
+| one row per | product name × branch × cycle (full outer join) |
+| answers | why our number and crm's number differ for the same product, branch and cycle |
+
+```text
+  our_demand_qty            what a planner should forecast (is_demand)
+  our_crm_universe_qty      our dispatches restricted to what crm counts
+  crm_qty                   crm's actual
+  gap_qty                   crm − ours (crm universe): returns netted by crm, invoice-vs-dispatch timing,
+                            substitutions, name spelling
+  our_ecommerce_qty / our_sample_qty / our_inter_company_qty   the pieces that explain the rest
+```
+
+- never expected to be zero; today the two agree within a few percent per cycle.
+
+### dim_plan_product - the product NAME and the items behind it  (materialized)
+
+| | |
+| --- | --- |
+| one row per | product name seen in the plan, the projection, crm's actuals or the item master |
+| join on | `name_key` |
+| answers | which items does this planned name stand for, and can their quantities be added up |
+
+| column | meaning |
+| --- | --- |
+| `name_key`, `product_name` | the key and the display spelling |
+| `is_in_item_master`, `item_count`, `item_ids`, `primary_item_id` | the items (primary = the one that shipped most) |
+| `has_several_items`, **`is_mixed_uom`**, `spans_item_groups` | the names whose items must not simply be summed |
+| `uom`, `item_group`, `business` | when consistent across the items |
+| `is_performance_chemicals`, `is_usable`, `is_temp_item`, `temp_item_id` | flags |
+| `used_in_plan`, `used_in_projection`, `used_in_crm_actuals` | where the name appears |
+
+### v_plan_product_mix - splitting a name into items
+
+| | |
+| --- | --- |
+| one row per | product name × branch × item |
+| answers | how to turn a name-level plan or forecast into item-level numbers |
+
+- `share` = the item's share of the name at that branch over the last four completed cycles; all-time share as fallback. Shares sum to 1 per name × branch.
+
+### fact_forecast_baseline_item / _name - the accuracy harness  (materialized)
+
+| | |
+| --- | --- |
+| one row per | product × branch × cycle (item grain), or product name × branch × cycle (name grain), for every pair with demand since 2022-23, every cycle from then to three ahead |
+| answers | how good is a forecast, and what would the simplest forecasts have said |
+
+| column | meaning |
+| --- | --- |
+| `actual_qty` | customer demand in the cycle (0 when nothing shipped; empty on future cycles) |
+| `naive_qty` | the same cycle a year earlier |
+| `avg4_qty`, `avg4_nonzero_qty` | average of the previous four cycles - plain, and over non-zero cycles (crm's way) |
+| `naive_abs_error`, `avg4_abs_error`, `avg4_nonzero_abs_error` | abs(actual − forecast), on completed cycles |
+| `is_completed`, `is_current`, `is_future` | cycle state |
+
+**How to read accuracy** - two conventions, say which one you use:
+
+```text
+  WAPE = sum(abs error) / sum(actual)   over a slice (a year, a branch, a business ..)
+
+  "where both exist"   rows with actual > 0 AND forecast > 0     - how good is the forecast on what it covers
+                        + coverage = share of demand in those rows - how much it covers
+  "all rows"           every completed row, zeros included       - one number, harsher (misses count fully)
+```
+
+- the review's figures (naive ≈ 60% WAPE, ≈ 70% coverage) are the "where both exist" convention.
+
+**Quick checks** (pgAdmin, after `SET search_path TO ponpure_planner;`)
+
+```sql
+SELECT jc_name, acc_year, jc_start, jc_end FROM dim_jc WHERE is_current;
+
+-- ours vs crm, last year, by cycle
+SELECT b.jc_no, round(sum(our_crm_universe_qty)::numeric), round(sum(crm_qty)::numeric)
+FROM v_actual_bridge b JOIN dim_jc j USING (jc_id) WHERE b.acc_year = '2025-2026' GROUP BY 1 ORDER BY 1;
+
+-- naive baseline, last year, where both exist: WAPE and coverage
+SELECT round(100.0 * sum(naive_abs_error) / sum(actual_qty), 1) AS wape_pct,
+       round(100.0 * sum(actual_qty) / (SELECT sum(actual_qty) FROM fact_forecast_baseline_name WHERE acc_year = '2025-2026' AND is_completed), 1) AS coverage_pct
+FROM fact_forecast_baseline_name WHERE acc_year = '2025-2026' AND is_completed AND actual_qty > 0 AND naive_qty > 0;
+```
+
+---
+
+## business_plan - part 2: the plans, open leads, plan vs actual, accuracy  `06_business_plan.sql`
+
+```text
+SCBusinessMonthlyPlanHdrs + Dtls
+              │
+              ▼
+     fact_plan_jc (mat.)
+              │
+SCBusinessMonthlyPlanJCDtls
+              │
+              ▼
+ fact_plan_forecast (mat.)
+              │
+SCLeadTargets + LeadDetails
+              │
+              ▼
+  fact_lead_plan_jc
+              │
+SCBusinessPlanProjections
+              │
+              ▼
+ fact_projection_jc
+              │
+              └──────────────┐
+                             ▼
+                  fact_plan_name_jc (mat.)
+                    name × branch × cycle
+                             │
+LeadProducts + LeadDetails   │
+              │              │
+              ▼              │
+      fact_open_lead         │
+                             │
+                             ▼
+fact_plan_name_jc ───────────┼──► v_plan_vs_actual
+fact_actual_jc ──────────────┤      CRM projection report
+fact_actual_jc_crm ──────────┤
+fact_schedule_line ──────────┤
+fact_quote_line ─────────────┤
+fact_open_lead ──────────────┘
+
+fact_plan_name_jc
+        │
+        ├────► fact_forecast_baseline_name
+        │
+        ▼
+v_forecast_accuracy
+(plan vs baseline scoreboard)
+```
+
+**Three rules baked in**
+
+- **status era**: `jcN_status` changed meaning in April 2025. Up to 2024-25 code 4 was the approved plan; from 2025-26 code 5 is, and 4 means waiting. `is_approved` applies the rule; crm's own screens filter `= 5` and cannot show the older years.
+- **approved is not planned**: a header can be approved for a cycle with no quantity in it. `has_plan` (a quantity exists) and `is_approved` (the workflow passed) are separate flags. Use both.
+- **re-saves folded**: a few plan headers carry thousands of identical detail rows. Folded by max per header × cycle; `detail_rows` says how many were folded.
+
+### fact_plan_jc - the customer plan, long  (materialized)
+
+| | |
+| --- | --- |
+| one row per | plan header (year × customer × branch × product name) × cycle that carries anything |
+| join on | `jc_id` → dim_jc · `name_key` → dim_plan_product · `customer_id` → dim_customer (`-1` = prospect) · `collector_id` → dim_collector · `plan_id` → the crm header |
+| answers | what was planned for whom, per cycle; was it approved; was anything planned at all |
+
+| column | meaning |
+| --- | --- |
+| `week1_qty`, `week2_qty`, **`plan_qty`** | planned quantity per fortnight and for the cycle (their sum) |
+| `avg_sell_price`, `plan_value` | planned price per unit; `plan_qty × price`, empty when unpriced. The crm value columns are never read (mixed units) |
+| `achieved_qty` | what crm recorded as achieved - sparse, prefer the actuals tables |
+| `status`, `status_label`, **`is_approved`**, **`has_plan`** | the workflow state, decoded era-aware, and the two independent flags |
+| `is_prospect`, `prospect_name`, `prospect_mc_code` | plans for customers not yet in the master |
+| `is_new_customer`, `is_key_customer`, `is_new_item` | the planner's flags |
+| `segment2`, `segment3`, `segment4`, `category_id` | how the planner classified the product (crm joins names on these too) |
+
+### fact_plan_forecast - the planner's rolling forecast  (materialized)
+
+| | |
+| --- | --- |
+| one row per | plan line × cycle it was made in × horizon (1 = next cycle, 2 = the one after) |
+| join on | `target_jc_id` → dim_jc (the cycle it predicts) · `made_in_jc_id` → dim_jc · `plan_id` → fact_plan_jc |
+| answers | in cycle n, what did the planner expect for n+1 and n+2 - and how right was it (join actuals on the target) |
+
+- `made_in_unknown_jc`: crm did not record the cycle for some rows; their target is unknown.
+
+### fact_lead_plan_jc - the lead plan
+
+| | |
+| --- | --- |
+| one row per | lead plan line × cycle, same shape and flags as fact_plan_jc |
+| join on | `lead_id` → LeadDetails · `item_id` / `temp_item_id` · `collector_id`, `customer_id` from the lead |
+| answers | what the branches expect from leads (prospects and new products), per cycle |
+
+- `counts_for_crm`: crm's projection drops closed and rejected leads - the flag says which ones it keeps.
+
+### fact_projection_jc - what crm published
+
+| | |
+| --- | --- |
+| one row per | product name × branch × cycle × type (`PC` from customer plans, `Lead` from lead plans) |
+| answers | what crm handed to oracle for supply |
+
+- computed by crm when it publishes: matches today's approved plan for the current cycle, drifts on cycles whose plans were edited afterwards. For the detail use the two plan tables; use this to see what was actually sent.
+
+### fact_plan_name_jc - the plan side at report grain  (materialized)
+
+| | |
+| --- | --- |
+| one row per | product name × branch × cycle |
+| join on | `name_key`, `collector_id`, `jc_seq` - the same key as fact_forecast_baseline_name (the actual side) |
+| answers | everything the plan says about a product at a branch in a cycle, in one row |
+
+| column | meaning |
+| --- | --- |
+| `plan_qty`, `plan_qty_unapproved`, `plan_value`, `plan_lines`, `plan_customers` | the approved customer plan and what is behind it |
+| `forecast_h1_qty`, `forecast_h2_qty` | the planner's forecast for this cycle, made one / two cycles earlier |
+| `lead_plan_qty` | the approved lead plan (leads crm counts) |
+| `projection_pc_qty`, `projection_lead_qty` | crm's published projection |
+
+### fact_open_lead - the open lead book
+
+| | |
+| --- | --- |
+| one row per | product on a lead that is neither converted nor closed |
+| join on | `lead_id` · `item_id` → dim_item (empty for temp items) · `name_key` · `collector_id` · `customer_id` |
+| answers | which leads are open, for what, how much, how old |
+
+- `lead_qty` is what crm's report counts as open lead quantity (real items only); `is_temp_item`, `in_pc_plan`, `sample_requested`, `lead_age_days` on the side.
+
+### v_plan_vs_actual - crm's projection report, rebuilt
+
+| | |
+| --- | --- |
+| one row per | product name × branch × cycle, from the same cycle last year to three cycles ahead |
+| answers | is the plan for this product at this branch reasonable against history, and what is already in the book |
+
+```text
+  the plan        plan_qty (approved) · plan_qty_unapproved · forecast_h1_qty · forecast_h2_qty
+                  lead_plan_qty · projection_pc_qty · projection_lead_qty
+  the actual      crm_actual_qty · our_actual_qty                         (cycles that have started)
+  the history     crm_prev4_qty · crm_prev4_avg_qty · crm_prev4_avg_nonzero_qty · crm_naive_qty
+                  our_prev4_qty · our_prev4_avg_qty · our_prev4_avg_nonzero_qty · our_naive_qty
+  crm's % diff    plan_vs_avg_pct = (plan − crm non-zero average of the previous four cycles) / that average
+  today's book    open_soc_qty · open_soc_qty_crm_rule · confirmed_quote_qty · open_lead_qty · open_lead_qty_incl_temp
+                  (only on cycles not yet completed - these are today numbers, not cycle numbers)
+```
+
+- `open_soc_qty` is our rule: open schedule lines that are customer demand with no pending cancellation. `open_soc_qty_crm_rule` is crm's looser count (every open line). The second is always the larger.
+- `primary_inventory_org_id`: the warehouse serving the branch today (latest open mapping); a branch can have several.
+
+### v_forecast_accuracy - the scoreboard
+
+| | |
+| --- | --- |
+| one row per | accounting year × branch (`collector_id` empty = all branches) × method |
+| methods | `naive`, `avg4`, `avg4_nonzero` (the baselines) · `plan` (approved plan) · `forecast_h1`, `forecast_h2` (the planner's forecasts) |
+| actual | our customer demand at product name × branch × cycle, completed cycles from 2022-23 |
+
+| column | meaning |
+| --- | --- |
+| `coverage_pct` | share of the demand that fell in rows where the method gave a number - the rest it missed entirely |
+| `wape_pct_where_both`, `bias_pct_where_both` | error and bias on the rows it covered (the "where both exist" convention) |
+| `wape_pct_all_rows`, `bias_pct_all_rows` | the same over every row, a missing forecast counted as zero (the harsh convention) |
+| `rows_all`, `rows_with_demand`, `rows_with_forecast`, `rows_both`, `actual_qty`, `forecast_qty` | the counts behind the percentages |
+
+- lower WAPE is better; bias above zero means over-forecast. Always say which convention a number uses.
+- what it shows today, in words: the four-cycle average is the best of the simple methods, the naive forecast next, the human plan and the planner's forecasts behind both - and the plan covers well under half of the demand.
+
+**Quick checks** (pgAdmin, after `SET search_path TO ponpure_planner;`)
+
+```sql
+-- approved vs planned, by year
+SELECT acc_year, count(*) FILTER (WHERE is_approved) AS approved_cells, count(*) FILTER (WHERE has_plan) AS planned_cells,
+       count(*) FILTER (WHERE is_approved AND has_plan) AS both
+FROM fact_plan_jc GROUP BY 1 ORDER BY 1;
+
+-- the current cycle, biggest plans first
+SELECT product_name, branch_name, plan_qty, forecast_h1_qty, crm_prev4_avg_nonzero_qty, plan_vs_avg_pct, open_soc_qty, confirmed_quote_qty, open_lead_qty
+FROM v_plan_vs_actual WHERE is_current ORDER BY plan_qty DESC LIMIT 20;
+
+-- the scoreboard, last year, all branches
+SELECT method, coverage_pct, wape_pct_where_both, bias_pct_where_both, wape_pct_all_rows
+FROM v_forecast_accuracy WHERE acc_year = '2025-2026' AND collector_id IS NULL ORDER BY wape_pct_where_both;
 ```

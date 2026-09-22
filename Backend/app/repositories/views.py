@@ -9,6 +9,7 @@ Materialized views (later, for the heavy stuff) hold data: they are created IF N
 by the etl at the end of a run through refresh_materialized_views().
 """
 
+import re
 from pathlib import Path
 from sqlalchemy import text
 
@@ -69,10 +70,25 @@ async def create_views(conn):
     print(f"views: {count} statements run from {VIEWS_DIR.name}/")
 
 
-def refresh_materialized_views(pg_cur):
-    """Refresh every materialized view in the schema. Called by the etl after a run. Sync (psycopg2)."""
+def materialized_view_names():
+    """The materialized views in the order the sql files define them - which is their dependency order,
+    since a view can only be built from views defined before it."""
 
-    pg_cur.execute("SELECT matviewname FROM pg_matviews WHERE schemaname = current_schema() ORDER BY 1")
-    for (name,) in pg_cur.fetchall():
-        pg_cur.execute(f'REFRESH MATERIALIZED VIEW "{name}"')
-        print(f"refreshed {name}")
+    names = []
+    for _, stmt in load_statements():
+        m = re.match(r'CREATE\s+MATERIALIZED\s+VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?"?([A-Za-z_][A-Za-z0-9_]*)', stmt, re.I)
+        if m:
+            names.append(m.group(1))
+    return names
+
+
+def refresh_materialized_views(pg_cur):
+    """Refresh every materialized view, in definition order so a view never reads a stale one it depends on.
+    Called by the etl after a run. Sync (psycopg2)."""
+
+    pg_cur.execute("SELECT matviewname FROM pg_matviews WHERE schemaname = current_schema()")
+    existing = {r[0] for r in pg_cur.fetchall()}
+    for name in materialized_view_names():
+        if name in existing:
+            pg_cur.execute(f'REFRESH MATERIALIZED VIEW "{name}"')
+            print(f"refreshed {name}")

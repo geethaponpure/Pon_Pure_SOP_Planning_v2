@@ -11,7 +11,7 @@ Two kinds:
 
 Built views are documented in `views_applied.md` (what each view is, columns, rules, diagrams). This file is only the to-do list.
 
-Status: item_master, customer_master, sales_order_soc, dispatch_master, quotation_master done. Next: business_plan.
+Status: item_master, customer_master, sales_order_soc, dispatch_master, quotation_master, business_plan (both parts) done - see views_applied.md. Next: purchase_master, then inventory_master and user_and_scope.
 
 ## customer_master - built, see `views_applied.md`
 
