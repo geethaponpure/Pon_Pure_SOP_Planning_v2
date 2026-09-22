@@ -57,6 +57,14 @@ CRM_TABLES = {
         "SCBusinessMonthlyPlanDtls",        # 13-JC detailed plan, per-JC week1/week2 user-defined qty
         "SCBusinessMonthlyPlanJCDtls",      # Next-month forecast for this JC, next-month-1 / next-month-2 JC qty
         "JourneyCalendars",                 # What JC is this?, JC master (name, effective_from/to, active/closed)
+        "SPBusinessPlanActualSales",        # crm's own actuals for the plan: oracle invoice qty per JC, by product name
+        "SCBusinessPlanProjections",        # the approved projection per branch x product x JC (what goes to oracle)
+        "SCLeadTargets",                    # the lead plan: per lead x product x JC (branch / customer via LeadDetails)
+        "SCLeadTargetJcDtls",               # rolling forecast on the lead plan
+        "FinancialYears",                   # the accounting years apr - mar
+        "TempItemmasters",                  # products planned before they exist in the item master
+        "LeadDetails",                      # the leads: branch, customer, status. the lead plan and lead products hang off it
+        "LeadProducts",                     # the products a lead is about, with the lead quantity (crm's open-lead qty)
     ],
 
 # ────────────────────────────── Procurement / purchase ────────────────────────────────────────────

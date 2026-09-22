@@ -68,5 +68,7 @@ def get_postgres_cursor():
     psg_cur.execute(
         f'SET search_path TO "{settings.POSTGRES_SCHEMA}"'
     )
+    
+    psg_cur.execute(f"SET lock_timeout = '{settings.PG_LOCK_TIMEOUT}'")
 
     return psg_conn,psg_cur 

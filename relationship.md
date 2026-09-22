@@ -320,6 +320,12 @@ The CRM Business Plan data model consists of four main tables:
 - SCBusinessMonthlyPlanHdrs
 - SCBusinessMonthlyPlanDtls
 - SCBusinessMonthlyPlanJCDtls
+- SPBusinessPlanActualSales (crm's own actuals for the plan: oracle invoice qty per journey cycle, by product name)
+- SCBusinessPlanProjections (the approved projection per branch x product name x journey cycle, PC and Lead)
+- SCLeadTargets + SCLeadTargetJcDtls (the LEAD plan: per lead x product x cycle, keyed on item id; branch and customer via LeadDetails)
+- FinancialYears (the accounting years apr - mar)
+- TempItemmasters (products planned or quoted before they exist in the item master)
+- LeadDetails + LeadProducts (the leads and the products they are about - the lead plan's branch and customer, and crm's open-lead quantity)
 
 The logical business relationship is:
 
@@ -374,10 +380,19 @@ Things to know:
 - **Duplicates**: a third of `SCBusinessMonthlyPlanDtls` (107k of 312k rows) are exact copies - same header, product and all 13 JC plans; one header has 4,443 identical lines. Also 2,606 duplicate header groups. Loaded as-is because `JCDtls` points at individual line ids. Dedupe in the views.
 - **Empty plans**: 86% of detail lines have all 26 week quantities at 0 and 87% of forecast rows are 0 / 0. crm creates a row for every header whether or not anything was planned. Filter in the views.
 - **Value columns are user typed in mixed units** (`jcN_weekN_user_dfn_value`: rupees on some rows, lakhs or ratios on most). Use `qty x jcN_user_dfn_avg_sell_price` instead.
-- `jcN_status` (1 .. 6) has no master table in crm; 1 and 4 cover 96%. `jcN_qty_achieved` is sparse - actuals come from `DispatchDetails`.
+- `jcN_status` on the header: **5 = submitted / approved plan** - crm's projection counts only these, and they are the ones carrying quantities; **1 = not submitted** (empty); 2 / 3 / 4 in-flight approval. No master table. `jcN_qty_achieved` is sparse.
 - All measures are float32 in crm (`real`), stored as double precision. Expect float artefacts like `0.20000000298`.
 - 2,744 forecast rows point at plan lines crm has deleted (loaded with `header_id` null); 7,888 carry `jc_type = 0` (loaded as `-1`); 123 have an `acc_year` that disagrees with the cycle's year.
 - `creation_date` is empty on 43% of headers (all of 2020-22). `acc_year` is the reliable time key.
+- **crm plans and measures by product NAME, never by item id.** `SP_PCProjectionReport` (the PC Projection screen) joins plan, actuals, open SOC, open leads and confirmed quotes on `item_description` + branch. Plan vs actual in the views follows that: product name grain, `dim_plan_product` says which item ids a name covers.
+- **`SPBusinessPlanActualSales`** is what crm compares the plan against: per year x branch x customer x product name, `jc1_qty .. jc13_qty` (and values) from **oracle invoices** - not from dispatches. Written by `SP_SPDivisionOraSyncCurrentYrSalesData`, header ids regenerated every sync (snapshot). `quantity` = the sum of the 13 jc quantities. `mc_code` is blank on every row (not loaded).
+- **`SCBusinessPlanProjections`** is the approved projection layer: per year x branch x product name, `jcN_projection1 + jcN_projection2` per cycle (two components - meaning to confirm with crm), `type` PC (from the plan) or Lead (from open leads). `SP_PCBusinessPlan_Projection_SyncToOracle` pushes it to oracle. `item_id` is 0 on most rows (crm's `OpeningBalance` placeholder item, loaded as null) - the key is the name. The older `jcN_projection` family and the `previous_*` columns are history, not loaded.
+- **`jcN_status` changed meaning in April 2025** (checked in our data): up to 2024-25 **4 = Approved** and no 5 exists; from 2025-26 **5 = Approved** and 4 = waiting PM / RM. Approved rule for all years: `status = 5 OR (status = 4 AND acc_year <= '2024-2025')`. crm's own screen filters `= 5`, so it cannot show pre-2025-26 plans. The lead plan (`SCLeadTargets`) has the same era switch.
+- **Approved is not planned**: most approved header-cycles carry no quantity; in-flight (status 3) rows hold real quantities. `has_plan` and `is_approved` are separate flags in the views.
+- **The lead plan** (`SCLeadTargets`) is keyed on the **item id** (every row resolves to `ItemMasters`; `is_temp_item` is 0 on every row so `TempItemmasters` is never referenced today). It carries no branch or customer: crm's projection joins `LeadDetails` (`collector` by name, `company` = `CustomerMasters.header_id`) and drops leads with status 8 (Close) or approval 3 - Both are loaded (slim). `LeadDetails.collector` is a branch **name** (resolved to `collector_id` on stage; 2% name a branch crm no longer has → null), `company` is the lead's or customer's `CustomerMasters.header_id`, `user_mc_code` follows the mc_code rule. `leadstatus`: 1 Prospect, 2 Qualified Lead, 3 Visit, 4 Credit Evaluation, 5 Sampling/Trials, 6 Quote, 7 Converted, 8 Close, 9 Temporary Close (`LeadStatus`, inlined in the views). `LeadProducts.productid` is text: an item id, or `TEMPnnn` for a temp item (nnn = `TempItemmasters.temp_item_id`, filled into `temp_item_id` on stage), or 0. crm's open-lead quantity = `quantity` on leads not Converted / Closed (`FN_PCProjection_GetOpenLMSQuantity`).
+- **crm's actuals are looser than `is_demand`**: `SP_SPDivisionOraSyncCurrentYrSalesData` pulls oracle AR (INV + CM net of returns, PC, `attribute15 <> 'E-Commerce'`) with **no transaction-type filter** - samples, Cogt and group company invoices are in; e-commerce is out; values are stored in lakhs. Our dispatch-based actuals differ on e-commerce, samples, group company, returns and invoice-vs-dispatch timing at cycle boundaries - the views carry both and a reconciliation bridge, not a match.
+- Plan accuracy (2025-26, name x branch, against crm's actuals): the annual plan covers about half the sold volume with WAPE ~63%; the cycle plan ~40% with WAPE ~200%; a naive same-cycle-last-year forecast covers ~72% with WAPE ~59%. The plan carries intent (new customers, prospects, price) but is not the demand signal - the forecast layer builds on actuals history at item x branch x cycle, with the plan as a feature and a planner override.
+- The projection screen's formula (`SP_PCProjectionReport`): for a year and cycle, per branch x product name x warehouse - plan qty (week1 + week2 of the cycle, submitted headers only), the next two months' forecast, the previous 4 cycles' invoiced actuals and their average, `% diff = (plan - average) / average`, plus open SOC qty, open lead qty and confirmed-quote qty on the side.
 
 ---
 
@@ -675,6 +690,14 @@ Things to know:
 | 1 | PurchaseRequisitionPtoPts | `Header_id → header_id` | incremental | – | – | – | – |
 | 1 | UserRoles | `line_id` (unique user_id) | snapshot | – | drop row if user / role missing; keep latest per user | – | – |
 | 1 | ArCustomers | `header_id` (unique customer_id) | upsert | – | drop row if customer missing | – | – |
+| 1 | SPBusinessPlanActualSales | `header_id` | snapshot | – | drop row if branch / customer missing | – | – |
+| 1 | SCBusinessPlanProjections | `line_id` | snapshot | – | item `0` → NULL; drop row if branch missing | – | – |
+| 0 | FinancialYears | `line_id` (unique name) | upsert | – | – | – | – |
+| 1 | TempItemmasters | `temp_item_id` | upsert | – | org item `0` → NULL | – | SCLeadTargets |
+| 4 | SCLeadTargets | `header_id` | snapshot | – | item on a temp item → `temp_item_id` (derived); item not in master → NULL; drop row if lead missing | – | SCLeadTargetJcDtls |
+| 3 | LeadDetails | `lead_id` | snapshot | – | branch name → `collector_id` (derived); circle lower/trim + `unknown`; customer / user / site / reason → NULL if missing | – | LeadProducts, SCLeadTargets |
+| 4 | LeadProducts | `line_id` | snapshot | – | `item_id` derived from productid; `TEMPnnn` → `temp_item_id`; drop row if lead missing | – | – |
+| 5 | SCLeadTargetJcDtls | `line_id` | snapshot | – | jc `0` → `-1`; blank header_id if the plan row is gone | – | – |
 | 1 | UserCollectorMappings | `header_id` (unique user_id + collector_id) | snapshot | – | drop copies of a pair (keep lowest header_id); drop row if user / branch missing | – | – |
 | 1 | UserCustomerMappings | `header_id` (unique user_id + customer_hdr_id) | snapshot | – | drop copies of a pair (keep lowest header_id); drop row if user / customer missing | – | – |
 | 1 | CollectorMailMappings | `header_id` (unique collector_id) | snapshot | – | drop row if branch missing; the six chain user ids → NULL if missing | – | – |

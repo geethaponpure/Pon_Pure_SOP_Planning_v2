@@ -10,7 +10,7 @@
 UPSERT_TABLES = {"Collectors", "MarketCircles", "CustomerMasters", "CustomerSites",
                  "ItemMasters", "ItemCategories", "DeliveryFroms", "QuotationStatus", 
                  "JourneyCalendars", "ApSuppliers", "InventoryOrgs",
-                 "Users", "Roles", "ArCustomers", "Reasons"}
+                 "Users", "Roles", "ArCustomers", "Reasons", "FinancialYears", "TempItemmasters"}
 
 
 
@@ -30,7 +30,8 @@ SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules",
                    "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping",
                    "UserRoles", "UserMarketCircleMappings", "UserCollectorMappings",
                    "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings",
-                   "tempcustomers"}
+                   "tempcustomers", "SPBusinessPlanActualSales", "SCBusinessPlanProjections",
+                   "SCLeadTargets", "SCLeadTargetJcDtls", "LeadDetails", "LeadProducts"}
 
 
 
@@ -38,6 +39,9 @@ SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules",
 #---------------- must be copied stage -> table along with the crm columns (TABLES_COLUMNS only drives the crm read) -----
 DERIVED_COLUMNS = {
     "BiStockDetail": ["item_id"],      # from item_code, see STAGE_FIXES
+    "SCLeadTargets": ["temp_item_id"], # from item_id when is_temp_item, see STAGE_FIXES
+    "LeadDetails":   ["collector_id"], # from the branch name, see STAGE_FIXES
+    "LeadProducts":  ["item_id"],      # from productid when it is a real item id, see STAGE_FIXES
 }
 
 
@@ -208,6 +212,79 @@ STAGE_FIXES = {
               AND NOT EXISTS (SELECT 1 FROM "MarketCircles" m WHERE m.mc_code = stage.new_customer_marketcircle)''',
     ],
 
+    "SPBusinessPlanActualSales": [
+        # both match 100% today. a row for a branch / customer we don't have means nothing, drop
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Collectors" c WHERE c.collector_id = stage.collector_id)''',
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "CustomerMasters" c WHERE c.customer_id = stage.customer_id)''',
+    ],
+    "SCBusinessPlanProjections": [
+        # item_id is 0 on most rows: the product is the name. 0 is crm's OpeningBalance placeholder item, not a product
+        "UPDATE stage SET item_id = NULL WHERE item_id = 0",
+        '''UPDATE stage SET item_id = NULL
+            WHERE item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "ItemMasters" i WHERE i.item_id = stage.item_id)''',
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Collectors" c WHERE c.collector_id = stage.collector_id)''',
+    ],
+    "LeadDetails": [
+        # the branch is a name. resolve it; 2% name a branch crm no longer has -> null
+        '''UPDATE stage SET collector_id = c.collector_id
+            FROM "Collectors" c WHERE upper(trim(c.name)) = upper(trim(stage.collector))''',
+        # the user's circle, same spelling rule as everywhere: lower / trim, unknown when blank or no match
+        "UPDATE stage SET user_mc_code = lower(trim(user_mc_code))",
+        '''UPDATE stage SET user_mc_code = 'unknown'
+            WHERE user_mc_code IS NULL OR user_mc_code = '' OR NOT EXISTS (SELECT 1 FROM "MarketCircles" m WHERE m.mc_code = stage.user_mc_code)''',
+        # optional links: 0 / gone -> null
+        '''UPDATE stage SET company = NULL
+            WHERE company IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "CustomerMasters" c WHERE c.header_id = stage.company)''',
+        '''UPDATE stage SET assignleadchk = NULL
+            WHERE assignleadchk IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.assignleadchk)''',
+        '''UPDATE stage SET bill_to_site_use_id = NULL
+            WHERE bill_to_site_use_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "CustomerSites" s WHERE s.site_use_id = stage.bill_to_site_use_id)''',
+        '''UPDATE stage SET close_reason_id = NULL
+            WHERE close_reason_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "Reasons" r WHERE r.header_id = stage.close_reason_id)''',
+    ],
+    "LeadProducts": [
+        # productid is text: a real item id, TEMPnnn for a temp item, or 0. keep the text, derive the item
+        "UPDATE stage SET item_id = productid::bigint WHERE productid ~ '^[0-9]+$' AND productid <> '0'",
+        '''UPDATE stage SET item_id = NULL
+            WHERE item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "ItemMasters" i WHERE i.item_id = stage.item_id)''',
+        "UPDATE stage SET temp_item_id = NULL WHERE temp_item_id = 0",
+        # most temp products are written as TEMPnnn in productid with temp_item_id left at 0: nnn is the temp item id
+        "UPDATE stage SET temp_item_id = substring(productid from 5)::bigint WHERE temp_item_id IS NULL AND productid ~ '^TEMP[0-9]+$'",
+        '''UPDATE stage SET temp_item_id = NULL
+            WHERE temp_item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "TempItemmasters" t WHERE t.temp_item_id = stage.temp_item_id)''',
+        # a product row for a lead we don't have means nothing (all match today)
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "LeadDetails" l WHERE l.lead_id = stage.leadid)''',
+    ],
+    "TempItemmasters": [
+        # org_item_master_id is 0 on most rows (crm's OpeningBalance placeholder item): not a real item
+        "UPDATE stage SET org_item_master_id = NULL WHERE org_item_master_id = 0",
+        '''UPDATE stage SET org_item_master_id = NULL
+            WHERE org_item_master_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "ItemMasters" i WHERE i.item_id = stage.org_item_master_id)''',
+    ],
+    "SCLeadTargets": [
+        # on a temp item the id points at TempItemmasters, not ItemMasters: move it (no such row today)
+        "UPDATE stage SET temp_item_id = item_id, item_id = NULL WHERE is_temp_item",
+        '''UPDATE stage SET temp_item_id = NULL
+            WHERE temp_item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "TempItemmasters" t WHERE t.temp_item_id = stage.temp_item_id)''',
+        # every item resolves today, safety net
+        '''UPDATE stage SET item_id = NULL
+            WHERE item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "ItemMasters" i WHERE i.item_id = stage.item_id)''',
+        # a plan row for a lead we don't have means nothing (all match today)
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "LeadDetails" l WHERE l.lead_id = stage.lead_id)''',
+    ],
+    "SCLeadTargetJcDtls": [
+        # a few rows carry jc 0 -> unknown journey cycle
+        '''UPDATE stage SET jc_type = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "JourneyCalendars" c WHERE c.line_id = stage.jc_type)''',
+        # a few point at lead plan rows crm has deleted, plus the snapshot race. blank them
+        '''UPDATE stage SET header_id = NULL
+            WHERE NOT EXISTS (SELECT 1 FROM "SCLeadTargets" t WHERE t.header_id = stage.header_id)''',
+    ],
     "SCBusinessMonthlyPlanJCDtls": [
         # 7,888 rows carry jc 0 -> unknown journey cycle
         '''UPDATE stage SET jc_type = -1
@@ -499,9 +576,27 @@ PARENT_CHECK = {
                         ("inventory_org_id",          "InventoryOrgs", "inventory_org_id")],
 
 #-------------------------------------------- quotation_master -----------------------------------------------------
+    "SPBusinessPlanActualSales": [("collector_id", "Collectors",      "collector_id"),
+                                  ("customer_id",  "CustomerMasters", "customer_id")],
+    "SCBusinessPlanProjections": [("collector_id", "Collectors",  "collector_id"),
+                                  ("item_id",      "ItemMasters", "item_id")],
     "SCBusinessMonthlyPlanHdrs": [("customer_id",     "CustomerMasters", "customer_id"),
                                   ("collector_id",    "Collectors",      "collector_id"),
                                   ("bill_to_site_id", "CustomerSites",   "site_use_id")],
+    "TempItemmasters":    [("org_item_master_id", "ItemMasters", "item_id")],
+    "LeadDetails":        [("company",             "CustomerMasters", "header_id"),
+                           ("collector_id",        "Collectors",      "collector_id"),
+                           ("assignleadchk",       "Users",           "line_id"),
+                           ("bill_to_site_use_id", "CustomerSites",   "site_use_id"),
+                           ("close_reason_id",     "Reasons",         "header_id")],
+    "LeadProducts":       [("leadid",       "LeadDetails",     "lead_id"),
+                           ("item_id",      "ItemMasters",     "item_id"),
+                           ("temp_item_id", "TempItemmasters", "temp_item_id")],
+    "SCLeadTargets":      [("lead_id",      "LeadDetails",     "lead_id"),
+                           ("item_id",      "ItemMasters",     "item_id"),
+                           ("temp_item_id", "TempItemmasters", "temp_item_id")],
+    "SCLeadTargetJcDtls": [("header_id", "SCLeadTargets",    "header_id"),
+                           ("jc_type",   "JourneyCalendars", "line_id")],
     "SCBusinessMonthlyPlanJCDtls": [("header_id", "SCBusinessMonthlyPlanDtls", "line_id"),
                                     ("jc_type",   "JourneyCalendars",          "line_id")],
     "SCBusinessMonthlyPlanDtls": [("header_id",    "SCBusinessMonthlyPlanHdrs", "header_id"),
@@ -524,15 +619,29 @@ PARENT_CHECK = {
 
 #---------------------------- Parent tables must load before child tables -------------------------------------
 LOAD_LEVELS = [
+#================================================ LEVEL 0 ===========================================================
     ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms",
-     "QuotationStatus", "JourneyCalendars", "ApSuppliers", "Users", "Roles", "Reasons"],   # no parents (Users only points at itself)
+     "QuotationStatus", "JourneyCalendars", "ApSuppliers", "Users", "Roles", "Reasons", "FinancialYears"],   # no parents (Users only points at itself)
+
+#================================================ LEVEL 1 ===========================================================
     ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "InventoryOrgs",
      "UserRoles", "UserCollectorMappings", "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings",
-     "ArCustomers"],                                                     # need level 0 (InventoryOrgs -> Collectors, the user mappings -> Users / Roles / Collectors / CustomerMasters)
+     "ArCustomers", "SPBusinessPlanActualSales", "SCBusinessPlanProjections", "TempItemmasters"],   # need level 0 (InventoryOrgs -> Collectors, the user mappings -> Users / Roles / Collectors / CustomerMasters)
+
+#================================================ LEVEL 2 ===========================================================
     ["CustomerSites", "BiPoDetails", "PurchaseRequisitionHdrs", "BiStockDetail",
-     "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping", "UserMarketCircleMappings", "tempcustomers"],   # need MarketCircles / InventoryOrgs. BiStockDetail is large: 4 inner workers
-    ["SaleOrderHdrs", "QuotationHdrs", "SCBusinessMonthlyPlanHdrs", "PurchaseRequisitionDtls"],   # need Collectors, CustomerMasters, CustomerSites (+ MarketCircles, QuotationStatus) / PurchaseRequisitionHdrs
-    ["SaleOrderDtls", "SocPendingDetails", "Dispatches", "QuotationDtls", "SCBusinessMonthlyPlanDtls"],   # need the level 3 headers (+ ItemMasters / MarketCircles / sites)
-    ["Schedules", "SocCancelDetails", "SCBusinessMonthlyPlanJCDtls"],    # level 5, need SaleOrderDtls / SCBusinessMonthlyPlanDtls
+     "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping", "UserMarketCircleMappings", "tempcustomers"],                                                   # need MarketCircles / InventoryOrgs / TempItemmasters. BiStockDetail is large: 4 inner workers
+
+#================================================ LEVEL 3 ===========================================================
+    ["SaleOrderHdrs", "QuotationHdrs", "SCBusinessMonthlyPlanHdrs", "PurchaseRequisitionDtls", "LeadDetails"],   # need Collectors, CustomerMasters, CustomerSites (+ MarketCircles, QuotationStatus) / PurchaseRequisitionHdrs
+
+#================================================ LEVEL 4 ===========================================================
+    ["SaleOrderDtls", "SocPendingDetails", "Dispatches", "QuotationDtls", "SCBusinessMonthlyPlanDtls", "LeadProducts", "SCLeadTargets"],   # need the level 3 headers (+ ItemMasters / MarketCircles / sites)
+
+
+#================================================ LEVEL 5 ===========================================================
+    ["Schedules", "SocCancelDetails", "SCBusinessMonthlyPlanJCDtls", "SCLeadTargetJcDtls"],    # level 5, need SaleOrderDtls / SCBusinessMonthlyPlanDtls
+
+#================================================ LEVEL 6 ===========================================================
     ["DispatchDetails"],                                                 # level 6, needs Schedules + Dispatches
 ]

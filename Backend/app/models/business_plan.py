@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, Integer, Text, Boolean, Double, Date, DateTime, ForeignKey
+from sqlalchemy import Column, BigInteger, Integer, Text, Boolean, Double, Numeric, Date, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
@@ -13,6 +13,13 @@ from app.core.database import Base
 #   SCBusinessMonthlyPlanHdrs -> SCBusinessMonthlyPlanDtls (13 JC plan, wide) -> SCBusinessMonthlyPlanJCDtls (rolling forecast per JC)
 #   SCBusinessMonthlyPlanHdrs / Dtls -> CustomerMasters, Collectors, CustomerSites
 #   SCBusinessMonthlyPlanJCDtls.jc_type -> JourneyCalendars
+#   SPBusinessPlanActualSales -> Collectors, CustomerMasters   (crm's own actuals: oracle invoice qty per jc, by product NAME)
+#   SCBusinessPlanProjections -> Collectors, ItemMasters       (the approved projection per branch x product name x jc)
+#   SCLeadTargets -> ItemMasters / TempItemmasters             (the LEAD plan, by item id; branch and customer via LeadDetails)
+#   SCLeadTargetJcDtls -> SCLeadTargets, JourneyCalendars
+#   FinancialYears                                             (the accounting years)
+#   LeadDetails -> CustomerMasters, Collectors, MarketCircles, Users, CustomerSites, Reasons   (the leads)
+#   LeadProducts -> LeadDetails, ItemMasters / TempItemmasters (what a lead is about, crm's open-lead qty)
 
 
 class JourneyCalendars(Base):
@@ -230,3 +237,319 @@ class SCBusinessMonthlyPlanJCDtls(Base):
 
     plan_line = relationship("SCBusinessMonthlyPlanDtls", back_populates="forecasts")
     journey_cycle = relationship("JourneyCalendars")
+
+
+
+class SPBusinessPlanActualSales(Base):
+    """the actual sales crm compares the plan against: oracle invoice quantity and value per journey cycle,
+    one row per year x branch x customer x product NAME. written by SP_SPDivisionOraSyncCurrentYrSalesData,
+    header ids regenerated every sync, so snapshot. SP_PCProjectionReport reads this, not the dispatches."""
+
+    __tablename__ = "SPBusinessPlanActualSales"
+
+    header_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    accyear = Column(Text, nullable=False, index=True)                       # 2026-2027
+    collector_id = Column(BigInteger, ForeignKey("Collectors.collector_id"), nullable=False, index=True)   # 100% match
+    customer_id = Column(BigInteger, ForeignKey("CustomerMasters.customer_id"), nullable=False, index=True)  # 100% match
+    customer_number = Column(Text)
+    itemdescription = Column(Text, nullable=False, index=True)              # the product NAME, the plan's key. 99% match an ItemMasters name
+    quantity = Column(Double)                                                # year total, equals the sum of the 13 jc quantities
+    jc1_qty = Column(Double)            # quantity invoiced in JC1 .. JC13 of that year
+    jc2_qty = Column(Double)            
+    jc3_qty = Column(Double)            
+    jc4_qty = Column(Double)            
+    jc5_qty = Column(Double)            
+    jc6_qty = Column(Double)            
+    jc7_qty = Column(Double)            
+    jc8_qty = Column(Double)            
+    jc9_qty = Column(Double)            
+    jc10_qty = Column(Double)           
+    jc11_qty = Column(Double)           
+    jc12_qty = Column(Double)           
+    jc13_qty = Column(Double)           
+    jc1_value = Column(Double)          # value invoiced per jc
+    jc2_value = Column(Double)          
+    jc3_value = Column(Double)          
+    jc4_value = Column(Double)          
+    jc5_value = Column(Double)          
+    jc6_value = Column(Double)          
+    jc7_value = Column(Double)          
+    jc8_value = Column(Double)          
+    jc9_value = Column(Double)          
+    jc10_value = Column(Double)         
+    jc11_value = Column(Double)         
+    jc12_value = Column(Double)         
+    jc13_value = Column(Double)         
+    total_value = Column(Double)
+    generate_date = Column(DateTime)                                         # when crm generated the row
+
+    collector = relationship("Collectors")
+    customer = relationship("CustomerMasters")
+
+
+
+class SCBusinessPlanProjections(Base):
+    """the approved projection: per year x branch x product name, two components per journey cycle
+    (projection1 / projection2), type PC or Lead. this is what SP_PCBusinessPlan_Projection_SyncToOracle pushes
+    to oracle. rows are edited in place, so snapshot. item_id is 0 on most rows - the product is the name."""
+
+    __tablename__ = "SCBusinessPlanProjections"
+
+    line_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    acc_year = Column(Text, nullable=False, index=True)
+    type = Column(Text, nullable=False)                                      # PC (from the business plan) / Lead (from open leads)
+    collector_id = Column(BigInteger, ForeignKey("Collectors.collector_id"), nullable=False, index=True)   # 100% match
+    item_id = Column(BigInteger, ForeignKey("ItemMasters.item_id"), index=True)   # filled on a sixth of the rows. crm's 0 (its OpeningBalance placeholder item) -> null
+    item_description = Column(Text, nullable=False, index=True)             # the product NAME, the key
+    jc1_projection1 = Column(Double)
+    jc2_projection1 = Column(Double)
+    jc3_projection1 = Column(Double)
+    jc4_projection1 = Column(Double)
+    jc5_projection1 = Column(Double)
+    jc6_projection1 = Column(Double)
+    jc7_projection1 = Column(Double)
+    jc8_projection1 = Column(Double)
+    jc9_projection1 = Column(Double)
+    jc10_projection1 = Column(Double)
+    jc11_projection1 = Column(Double)
+    jc12_projection1 = Column(Double)
+    jc13_projection1 = Column(Double)
+    jc1_projection2 = Column(Double)
+    jc2_projection2 = Column(Double)
+    jc3_projection2 = Column(Double)
+    jc4_projection2 = Column(Double)
+    jc5_projection2 = Column(Double)
+    jc6_projection2 = Column(Double)
+    jc7_projection2 = Column(Double)
+    jc8_projection2 = Column(Double)
+    jc9_projection2 = Column(Double)
+    jc10_projection2 = Column(Double)
+    jc11_projection2 = Column(Double)
+    jc12_projection2 = Column(Double)
+    jc13_projection2 = Column(Double)
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+    collector = relationship("Collectors")
+    item = relationship("ItemMasters")
+
+
+
+class FinancialYears(Base):
+    """the accounting years (apr - mar). the projection needs it to find the previous year's cycles."""
+
+    __tablename__ = "FinancialYears"
+
+    line_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    name = Column(Text, nullable=False, unique=True)                          # 2026-2027, the acc_year every plan table uses
+    effective_from = Column(Date, nullable=False)
+    effective_to = Column(Date, nullable=False)
+    is_active = Column(Boolean)                                              # the current year
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+
+
+class TempItemmasters(Base):
+    """products planned or quoted before they exist in the item master. a few later became real items
+    (org_item_master_id). nothing loaded points at them today (is_temp_item is 0 on every lead plan row)."""
+
+    __tablename__ = "TempItemmasters"
+
+    temp_item_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    temp_itemname = Column(Text)
+    segment1 = Column(Text)                                                  # spelling is messy (Performence chemicals, wtc, vooki), null on most
+    segment2 = Column(Text)
+    segment3 = Column(Text)
+    segment4 = Column(Text)
+    item_group = Column(Text)
+    sale_type = Column(Text)
+    status_id = Column(BigInteger)                                           # no master
+    is_active = Column(Boolean)
+    lead_id = Column(BigInteger)                                             # the lead it was raised for. soft, LeadDetails not loaded
+    org_item_master_id = Column(BigInteger, ForeignKey("ItemMasters.item_id"))   # the real item it became, a handful. crm's 0 -> null
+    org_item_master_code = Column(Text)
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+    item = relationship("ItemMasters")
+
+
+
+class SCLeadTargets(Base):
+    """the lead plan: what a branch expects to sell to a LEAD, per product and journey cycle. same shape as the
+    customer plan detail but keyed on the item id, one row per lead x item x year. the branch and the customer
+    are not on the row - they sit on LeadDetails (collector by name, company = CustomerMasters.header_id).
+    same status meaning as the customer plan: 4 = approved up to 2024-25, 5 = approved from 2025-26."""
+
+    __tablename__ = "SCLeadTargets"
+
+    header_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    lead_id = Column(BigInteger, ForeignKey("LeadDetails.lead_id"), nullable=False, index=True)   # the lead: its branch and customer are there. all match
+    acc_yr = Column(Text, nullable=False, index=True)
+    item_id = Column(BigInteger, ForeignKey("ItemMasters.item_id"), index=True)          # the product, all match today. null when the row is on a temp item
+    temp_item_id = Column(BigInteger, ForeignKey("TempItemmasters.temp_item_id"))         # set on stage from item_id when is_temp_item (none today)
+    is_temp_item = Column(Boolean)
+    potential_qty = Column(Numeric(18, 3))
+    potential_value = Column(Numeric(18, 3))
+    budget_qty = Column(Numeric(18, 3))
+    budget_value = Column(Numeric(18, 3))
+    jc1_week1_user_dfn_qty = Column(Double)                       # planned qty, first fortnight of the cycle
+    jc2_week1_user_dfn_qty = Column(Double)
+    jc3_week1_user_dfn_qty = Column(Double)
+    jc4_week1_user_dfn_qty = Column(Double)
+    jc5_week1_user_dfn_qty = Column(Double)
+    jc6_week1_user_dfn_qty = Column(Double)
+    jc7_week1_user_dfn_qty = Column(Double)
+    jc8_week1_user_dfn_qty = Column(Double)
+    jc9_week1_user_dfn_qty = Column(Double)
+    jc10_week1_user_dfn_qty = Column(Double)
+    jc11_week1_user_dfn_qty = Column(Double)
+    jc12_week1_user_dfn_qty = Column(Double)
+    jc13_week1_user_dfn_qty = Column(Double)
+    jc1_week2_user_dfn_qty = Column(Double)                       # second fortnight
+    jc2_week2_user_dfn_qty = Column(Double)
+    jc3_week2_user_dfn_qty = Column(Double)
+    jc4_week2_user_dfn_qty = Column(Double)
+    jc5_week2_user_dfn_qty = Column(Double)
+    jc6_week2_user_dfn_qty = Column(Double)
+    jc7_week2_user_dfn_qty = Column(Double)
+    jc8_week2_user_dfn_qty = Column(Double)
+    jc9_week2_user_dfn_qty = Column(Double)
+    jc10_week2_user_dfn_qty = Column(Double)
+    jc11_week2_user_dfn_qty = Column(Double)
+    jc12_week2_user_dfn_qty = Column(Double)
+    jc13_week2_user_dfn_qty = Column(Double)
+    jc1_qty_achieved = Column(Double)                             # sparse
+    jc2_qty_achieved = Column(Double)
+    jc3_qty_achieved = Column(Double)
+    jc4_qty_achieved = Column(Double)
+    jc5_qty_achieved = Column(Double)
+    jc6_qty_achieved = Column(Double)
+    jc7_qty_achieved = Column(Double)
+    jc8_qty_achieved = Column(Double)
+    jc9_qty_achieved = Column(Double)
+    jc10_qty_achieved = Column(Double)
+    jc11_qty_achieved = Column(Double)
+    jc12_qty_achieved = Column(Double)
+    jc13_qty_achieved = Column(Double)
+    jc1_user_dfn_avg_sell_price = Column(Double)                  # value = qty x this. the _value columns are mixed units, not loaded
+    jc2_user_dfn_avg_sell_price = Column(Double)
+    jc3_user_dfn_avg_sell_price = Column(Double)
+    jc4_user_dfn_avg_sell_price = Column(Double)
+    jc5_user_dfn_avg_sell_price = Column(Double)
+    jc6_user_dfn_avg_sell_price = Column(Double)
+    jc7_user_dfn_avg_sell_price = Column(Double)
+    jc8_user_dfn_avg_sell_price = Column(Double)
+    jc9_user_dfn_avg_sell_price = Column(Double)
+    jc10_user_dfn_avg_sell_price = Column(Double)
+    jc11_user_dfn_avg_sell_price = Column(Double)
+    jc12_user_dfn_avg_sell_price = Column(Double)
+    jc13_user_dfn_avg_sell_price = Column(Double)
+    jc1_status = Column(Integer)                                  # 1 pending .. 4 / 5 approved (era dependent), see the customer plan
+    jc2_status = Column(Integer)
+    jc3_status = Column(Integer)
+    jc4_status = Column(Integer)
+    jc5_status = Column(Integer)
+    jc6_status = Column(Integer)
+    jc7_status = Column(Integer)
+    jc8_status = Column(Integer)
+    jc9_status = Column(Integer)
+    jc10_status = Column(Integer)
+    jc11_status = Column(Integer)
+    jc12_status = Column(Integer)
+    jc13_status = Column(Integer)
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+    item = relationship("ItemMasters")
+    temp_item = relationship("TempItemmasters")
+    forecasts = relationship("SCLeadTargetJcDtls", back_populates="plan_line")
+    lead = relationship("LeadDetails", back_populates="plans")
+
+
+
+class SCLeadTargetJcDtls(Base):
+    """rolling forecast on the lead plan, per plan row and journey cycle: qty expected next month and the month after."""
+
+    __tablename__ = "SCLeadTargetJcDtls"
+
+    line_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    header_id = Column(BigInteger, ForeignKey("SCLeadTargets.header_id"), index=True)   # the lead plan row. null when crm deleted it
+    acc_year = Column(Text)
+    jc_type = Column(BigInteger, ForeignKey("JourneyCalendars.line_id"), index=True)     # the journey cycle. -1 when crm has 0
+    jc_nextmonth1_qty = Column(Double)
+    jc_nextmonth2_qty = Column(Double)
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+    plan_line = relationship("SCLeadTargets", back_populates="forecasts")
+    journey_cycle = relationship("JourneyCalendars")
+
+
+
+class LeadDetails(Base):
+    """the leads (crm's LMS): a prospect or an existing customer being worked for new business. the lead plan
+    (SCLeadTargets) and the lead products hang off it; crm's projection gets the lead plan's branch and customer
+    from here. one row per lead. rows are edited all the time and deleted, so snapshot."""
+
+    __tablename__ = "LeadDetails"
+
+    lead_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    lead_no = Column(Text)                                                   # LEAD-xxx, the visible number
+    company = Column(BigInteger, ForeignKey("CustomerMasters.header_id"), index=True)   # crm's company = the customer or lead row in CustomerMasters (header_id), all but a few match
+    collector = Column(Text)                                            # the branch as crm stores it (a name, sometimes with spaces)
+    collector_id = Column(BigInteger, ForeignKey("Collectors.collector_id"), index=True)        # resolved from the name on stage. null when the name is gone (CHENNAI, ANKLESHWAR ..)
+    user_mc_code = Column(Text, ForeignKey("MarketCircles.mc_code"), index=True)  # the user's circle, lower / trim, "unknown" when blank or no match
+    assignleadchk = Column(BigInteger, ForeignKey("Users.line_id"))       # who works the lead. null when gone
+    bill_to_site_use_id = Column(BigInteger, ForeignKey("CustomerSites.site_use_id"))   # filled once the lead is a customer, all match
+    leadstatus = Column(BigInteger)                                      # 1 Prospect 2 Qualified 3 Visit 4 Credit Evaluation 5 Sampling 6 Quote 7 Converted 8 Close 9 Temporary Close
+    approve_status = Column(BigInteger)                                      # 0 .. 3, 3 = rejected (crm's projection drops those)
+    lead_close_status = Column(BigInteger)                                   # 0 open, 1 .. 4 closing states
+    converted = Column(Boolean)
+    is_temp_customer = Column(Boolean)                                       # the customer did not exist when the lead was raised
+    segment1 = Column(Text)                                                  # General Chemicals / Performance Chemicals / NPD .. null on a fifth
+    industry = Column(Text)
+    industry_id = Column(BigInteger)                                         # no master loaded
+    customername = Column(Text)                                             # as typed on the lead
+    enquiry_id = Column(BigInteger)                                          # the enquiry it came from, soft
+    lead_crm_soc_no = Column(BigInteger)                                       # the order the lead turned into. soft, only a fifth are loaded orders
+    close_reason_id = Column(BigInteger, ForeignKey("Reasons.header_id"))    # why it was closed. 0 -> null
+    approval_date = Column(DateTime)
+    uploaded_date = Column(DateTime)
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+    customer = relationship("CustomerMasters")
+    branch = relationship("Collectors")                                      # not "collector": that is the name column
+    products = relationship("LeadProducts", back_populates="lead")
+    plans = relationship("SCLeadTargets", back_populates="lead")
+
+
+
+class LeadProducts(Base):
+    """the products a lead is about, with the quantity the lead is for. crm's open-lead quantity on the projection
+    screen = quantity on leads that are not converted or closed. product is an item, or a temp item (TEMPnnn)."""
+
+    __tablename__ = "LeadProducts"
+
+    line_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    leadid = Column(BigInteger, ForeignKey("LeadDetails.lead_id"), nullable=False, index=True)   # all match
+    productid = Column(Text)                                                 # crm's text: an item id, or TEMPnnn, or 0
+    item_id = Column(BigInteger, ForeignKey("ItemMasters.item_id"), index=True)            # resolved on stage when productid is a real item
+    temp_item_id = Column(BigInteger, ForeignKey("TempItemmasters.temp_item_id"))           # crm's column, 0 -> null. all match
+    product_itemname = Column(Text)
+    product_group = Column(Text)
+    quantity = Column(Numeric(18, 2))                                        # the lead quantity - crm's open-lead qty
+    quantity_value = Column(Numeric(18, 2))
+    potential = Column(Numeric(18, 2))
+    potential_value = Column(Numeric(18, 2))
+    annualpotential = Column(Numeric(18, 2))
+    prod_type_id = Column(BigInteger)                                        # no master
+    consider_pcbusinessplan_flag = Column(Boolean)                           # a few hundred true
+    sample_request_flag = Column(Boolean)
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+    lead = relationship("LeadDetails", back_populates="products")
+    item = relationship("ItemMasters")

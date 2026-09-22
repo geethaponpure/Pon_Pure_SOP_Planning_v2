@@ -22,6 +22,8 @@ NULL = r"\N" # NULL marker so NULL and '' stay different
 # the crm link drops now and then (10054 closed by the remote host, 10060 timed out). a long read is the
 # one that gets hit. these are the sqlstates / codes that mean "the link", not "the data or the sql".
 LINK_ERRORS = ("08S01", "08001", "HYT00", "10054", "10060")
+# postgres gave up waiting for a lock (lock_timeout, sqlstate 55P03): someone else held the table. worth a retry too
+LOCK_ERRORS = ("55P03", "lock timeout")
 RETRIES = 3         # attempts per table
 RETRY_WAIT = 20     # seconds between them
 
@@ -200,10 +202,10 @@ def load_stage(pg_cur, ss_cur, table, columns, pk_clm, upsert=False):
 
 
 
-def is_link_error(e):
-    """Did the crm link drop, as opposed to a data or sql error?"""
+def is_retryable(e):
+    """The crm link dropped, or postgres timed out waiting for a lock - as opposed to a data or sql error."""
     msg = str(e)
-    return any(code in msg for code in LINK_ERRORS)
+    return any(code in msg for code in LINK_ERRORS) or any(code in msg for code in LOCK_ERRORS)
 
 
 
@@ -216,9 +218,10 @@ def sync_table(table, columns, category):
         try:
             return _sync_table_once(table, columns, category)
         except Exception as e:
-            if not is_link_error(e) or attempt == RETRIES:
+            if not is_retryable(e) or attempt == RETRIES:
                 raise
-            print(f"[{category}] {table}: crm link dropped, retry {attempt}/{RETRIES - 1} in {RETRY_WAIT}s")
+            why = "lock timeout" if any(c in str(e) for c in LOCK_ERRORS) else "crm link dropped"
+            print(f"[{category}] {table}: {why}, retry {attempt}/{RETRIES - 1} in {RETRY_WAIT}s")
             time.sleep(RETRY_WAIT)
 
 
@@ -474,7 +477,7 @@ def sync_large_table(table, columns, category):
 
 
 
-def export_table_from_sql_to_psg(workers=4):
+def export_table_from_sql_to_psg(workers=6):
     """Sync tables level by level; parallel inside each level."""
     lookup = {table: (category, cols) for category, tables in TABLES_COLUMNS.items() for table, cols in tables.items()}
 

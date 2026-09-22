@@ -22,6 +22,7 @@ class Setting(BaseSettings):
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
     POSTGRES_SCHEMA: str
+    PG_LOCK_TIMEOUT: str = '10min'   # a blocked lock fails after this instead of hanging (etl retries, api start errors)
 
     DB_TIMEOUT:int = 120
 

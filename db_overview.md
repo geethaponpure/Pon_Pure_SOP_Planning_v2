@@ -64,6 +64,14 @@ The monthly plan the branches fill in for their customers, cycle by cycle. A JC 
 - **SCBusinessMonthlyPlanDtls** - the plan itself: planned and achieved quantity for each cycle.
 - **SCBusinessMonthlyPlanJCDtls** - the forecast entered in each cycle for the coming months.
 - **JourneyCalendars** - the cycle calendar: start and end date of every JC.
+- **SPBusinessPlanActualSales** - what was actually sold per cycle, as CRM computes it from invoices, by branch, customer and product name.
+- **SCBusinessPlanProjections** - the approved sales projection per branch and product for each cycle (the numbers sent to Oracle).
+- **SCLeadTargets** - the lead plan: what a branch expects to sell to a lead (a customer not yet won), per product and cycle.
+- **SCLeadTargetJcDtls** - the forecast entered on the lead plan each cycle for the coming months.
+- **FinancialYears** - the accounting years (April to March).
+- **TempItemmasters** - products that were planned or quoted before they existed in the product list.
+- **LeadDetails** - the leads: a prospect or customer being worked for new business, with its branch, status and the person on it.
+- **LeadProducts** - the products each lead is about, and the quantity the lead is for.
 
 ## 7. purchase_master - what we buy and from whom
 
