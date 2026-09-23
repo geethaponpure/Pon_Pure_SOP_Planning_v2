@@ -57,6 +57,7 @@ CRM_TABLES = {
         "SCBusinessMonthlyPlanDtls",        
         "SCBusinessMonthlyPlanJCDtls",      
         "JourneyCalendars",                 
+        "JcWeeklyCalendars",                
         "SPBusinessPlanActualSales",        
         "SCBusinessPlanProjections",        
         "SCLeadTargets",                    
@@ -65,6 +66,8 @@ CRM_TABLES = {
         "TempItemmasters",                  
         "LeadDetails",                      
         "LeadProducts",                     
+        "PcBusinessPlanReopens",            
+        "SCBusinessPlanLogs",               
     ],
 
 # ────────────────────────────── Procurement / purchase ────────────────────────────────────────────

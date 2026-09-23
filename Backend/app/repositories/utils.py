@@ -10,7 +10,7 @@
 UPSERT_TABLES = {"Collectors", "MarketCircles", "CustomerMasters", "CustomerSites",
                  "ItemMasters", "ItemCategories", "DeliveryFroms", "QuotationStatus", 
                  "JourneyCalendars", "ApSuppliers", "InventoryOrgs",
-                 "Users", "Roles", "ArCustomers", "Reasons", "FinancialYears", "TempItemmasters"}
+                 "Users", "Roles", "ArCustomers", "Reasons", "FinancialYears", "TempItemmasters", "JcWeeklyCalendars"}
 
 
 
@@ -30,7 +30,7 @@ SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules",
                    "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping",
                    "UserRoles", "UserMarketCircleMappings", "UserCollectorMappings",
                    "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings",
-                   "tempcustomers", "SPBusinessPlanActualSales", "SCBusinessPlanProjections",
+                   "tempcustomers", "SPBusinessPlanActualSales", "SCBusinessPlanProjections", "PcBusinessPlanReopens", "SCBusinessPlanLogs",
                    "SCLeadTargets", "SCLeadTargetJcDtls", "LeadDetails", "LeadProducts"}
 
 
@@ -226,6 +226,15 @@ STAGE_FIXES = {
             WHERE item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "ItemMasters" i WHERE i.item_id = stage.item_id)''',
         '''DELETE FROM stage
             WHERE NOT EXISTS (SELECT 1 FROM "Collectors" c WHERE c.collector_id = stage.collector_id)''',
+    ],
+    "PcBusinessPlanReopens": [
+        "UPDATE stage SET mc_code = lower(trim(mc_code))",
+        '''UPDATE stage SET mc_code = 'unknown'
+            WHERE mc_code IS NULL OR mc_code = '' OR NOT EXISTS (SELECT 1 FROM "MarketCircles" m WHERE m.mc_code = stage.mc_code)''',
+    ],
+    "SCBusinessPlanLogs": [
+        '''UPDATE stage SET header_id = NULL
+            WHERE header_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "SCBusinessMonthlyPlanHdrs" h WHERE h.header_id = stage.header_id)''',
     ],
     "LeadDetails": [
         # the branch is a name. resolve it; 2% name a branch crm no longer has -> null
@@ -580,6 +589,8 @@ PARENT_CHECK = {
                                   ("customer_id",  "CustomerMasters", "customer_id")],
     "SCBusinessPlanProjections": [("collector_id", "Collectors",  "collector_id"),
                                   ("item_id",      "ItemMasters", "item_id")],
+    "PcBusinessPlanReopens":    [("user_id",         "Users",           "line_id")],
+    "SCBusinessPlanLogs":       [("header_id",       "SCBusinessMonthlyPlanHdrs", "header_id")],
     "SCBusinessMonthlyPlanHdrs": [("customer_id",     "CustomerMasters", "customer_id"),
                                   ("collector_id",    "Collectors",      "collector_id"),
                                   ("bill_to_site_id", "CustomerSites",   "site_use_id")],
@@ -621,7 +632,7 @@ PARENT_CHECK = {
 LOAD_LEVELS = [
 #================================================ LEVEL 0 ===========================================================
     ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms",
-     "QuotationStatus", "JourneyCalendars", "ApSuppliers", "Users", "Roles", "Reasons", "FinancialYears"],   # no parents (Users only points at itself)
+     "QuotationStatus", "JourneyCalendars", "JcWeeklyCalendars", "ApSuppliers", "Users", "Roles", "Reasons", "FinancialYears"],   # no parents (Users only points at itself)
 
 #================================================ LEVEL 1 ===========================================================
     ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "InventoryOrgs",
@@ -630,13 +641,13 @@ LOAD_LEVELS = [
 
 #================================================ LEVEL 2 ===========================================================
     ["CustomerSites", "BiPoDetails", "PurchaseRequisitionHdrs", "BiStockDetail",
-     "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping", "UserMarketCircleMappings", "tempcustomers"],                                                   # need MarketCircles / InventoryOrgs / TempItemmasters. BiStockDetail is large: 4 inner workers
+     "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping", "UserMarketCircleMappings", "tempcustomers", "PcBusinessPlanReopens"],                                                   # need MarketCircles / InventoryOrgs / TempItemmasters. BiStockDetail is large: 4 inner workers
 
 #================================================ LEVEL 3 ===========================================================
     ["SaleOrderHdrs", "QuotationHdrs", "SCBusinessMonthlyPlanHdrs", "PurchaseRequisitionDtls", "LeadDetails"],   # need Collectors, CustomerMasters, CustomerSites (+ MarketCircles, QuotationStatus) / PurchaseRequisitionHdrs
 
 #================================================ LEVEL 4 ===========================================================
-    ["SaleOrderDtls", "SocPendingDetails", "Dispatches", "QuotationDtls", "SCBusinessMonthlyPlanDtls", "LeadProducts", "SCLeadTargets"],   # need the level 3 headers (+ ItemMasters / MarketCircles / sites)
+    ["SaleOrderDtls", "SocPendingDetails", "Dispatches", "QuotationDtls", "SCBusinessMonthlyPlanDtls", "LeadProducts", "SCLeadTargets", "SCBusinessPlanLogs"],   # need the level 3 headers (+ ItemMasters / MarketCircles / sites)
 
 
 #================================================ LEVEL 5 ===========================================================

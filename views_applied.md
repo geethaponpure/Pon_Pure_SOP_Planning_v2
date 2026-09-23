@@ -18,9 +18,9 @@ The views that are built and live. One section per cluster. `views.md` keeps the
 | | |
 | --- | --- |
 | where | `Backend/app/views/<nn>_<cluster>.sql` - one file per cluster |
-| when | every api start, right after the tables (`app/repositories/views.py`) |
-| how | `DROP VIEW ... CASCADE` + `CREATE VIEW` - a change never breaks a restart |
-| materialized | a view that is slow to compute is made `MATERIALIZED` (it holds its rows): rebuilt at api start like the others, and refreshed at the end of every etl run - in the order the files define them, so a view never reads a stale one it depends on. Marked **(materialized)** below |
+| when | at api start, right after the tables (`app/repositories/views.py`) - but only the files that changed: the runner keeps a hash of each file in `view_files` and runs from the first changed (or incomplete) file onward. An unchanged set runs nothing, so a restart is instant |
+| how | `DROP VIEW ... CASCADE` + `CREATE VIEW` - a change never breaks a rebuild. Editing one file rebuilds that file and the ones after it |
+| materialized | a view that is slow to compute is made `MATERIALIZED` (it holds its rows): rebuilt at api start like the others, and refreshed at the end of every etl run - in the order the files define them, so a view never reads a stale one it depends on; concurrently where the view has a unique key, so readers are never blocked. Marked **(materialized)** below |
 | names | `dim_*` one row per thing · `fact_*` events and measures · `v_*` helpers |
 | comments | every view and column has a `COMMENT ON` in plain language - hover a column in pgAdmin, or the ai agent reads it from the catalog |
 | pgAdmin | `SET search_path TO ponpure_planner;` once, then view names need no quotes |
@@ -704,6 +704,32 @@ dim_plan_product (mat.)
 | `jc_start`, `jc_end`, `days`, `year_start`, `year_end` | dates | |
 | `is_current`, `is_completed`, `is_future` | where today falls | |
 | `prev_jc_id`, `next_jc_id`, `same_jc_last_year_id` | the links | |
+| `se_cutoff`, `te_auto_approval`, `bm_cutoff`, `bh_cutoff` | the deadlines that produced this cycle's plan - all of them fall in the *previous* cycle |
+| `handoff_date`, `publish_date` | when the approved plan went to the planners, and when it went to Oracle |
+
+**How a cycle's plan is made** (CRM, Sep 2026) - the dates above come straight from this:
+
+```text
+                 cycle T-1                                        cycle T
+  week 1   week 2          week 3               week 4       |
+           SE enters  →  TE  →  BM  →  RM/BH               |  the plan is now live
+           (Thu)         (Sun) (Wed)  (last day)            |
+                                        hand-off ↑ (1st day of week 4)
+                                        publish to Oracle ↑ (last day of T-1)
+```
+
+- the same entry gives cycle T split into two fortnights, and one number each for T+1 and T+2.
+- each stage auto-approves when its day passes, so a plan can reach Oracle without anyone clicking approve - see `is_bm_approved`.
+
+### dim_jc_week - the four weeks of a cycle
+
+| | |
+| --- | --- |
+| one row per | cycle × week (1 to 4), Sunday to Saturday |
+| join on | `acc_year` + `jc_no` → dim_jc |
+| answers | which week of which cycle is a date in; where the planning deadlines fall |
+
+- the first week of JC1 and the last of JC13 are short or long so the accounting year fits exactly.
 
 ### fact_actual_jc - what shipped, per cycle  (materialized)
 
@@ -728,6 +754,7 @@ dim_plan_product (mat.)
 | answers | what crm's plan screens show as "actual" |
 
 - from Oracle invoices: net of returns, e-commerce excluded, **no transaction-type filter**; `value_inr` = crm's lakhs × 100,000.
+- crm stored the quantities of 2020-21 and 2021-22 divided by 1,000 and never regenerated them; the view multiplies those two years back. Values were never affected.
 
 ### v_actual_bridge - ours vs theirs
 
@@ -745,7 +772,7 @@ dim_plan_product (mat.)
   our_ecommerce_qty / our_sample_qty / our_inter_company_qty   the pieces that explain the rest
 ```
 
-- never expected to be zero; today the two agree within a few percent per cycle.
+- never expected to be zero. Ours runs a few percent above crm's (between one and eight percent per cycle, measured this year): crm nets returns, books credit memos negative, goes by invoice date and by the bill-to site's branch.
 
 ### dim_plan_product - the product NAME and the items behind it  (materialized)
 
@@ -758,11 +785,15 @@ dim_plan_product (mat.)
 | column | meaning |
 | --- | --- |
 | `name_key`, `product_name` | the key and the display spelling |
+| **`master_name_key`**, `resolved_by`, `is_resolved` | the item master name the spelling stands for: itself (`exact`), a hand-kept alias from `plan_name_alias` (`alias`), or the one master name with the same letters and digits (`spelling`). Every name-grain fact carries the resolved key as `name_key`, so a plan typed as `LG BW 400 R` meets the actuals of `BW 400 R` |
 | `is_in_item_master`, `item_count`, `item_ids`, `primary_item_id` | the items (primary = the one that shipped most) |
 | `has_several_items`, **`is_mixed_uom`**, `spans_item_groups` | the names whose items must not simply be summed |
 | `uom`, `item_group`, `business` | when consistent across the items |
+| **`plan_uom`**, `uom_assumed` | the unit a plan quantity is read in: the shared unit, or - when the items mix units - the unit of the item that ships most, flagged as assumed |
 | `is_performance_chemicals`, `is_usable`, `is_temp_item`, `temp_item_id` | flags |
 | `used_in_plan`, `used_in_projection`, `used_in_crm_actuals` | where the name appears |
+
+- unresolved names are dead spellings from the early years; today's plan carries no quantity on them. New ones go into `plan_name_alias` in pgAdmin (`name_key` lower case and trimmed, `item_id`, a note) and resolve at the next rebuild.
 
 ### v_plan_product_mix - splitting a name into items
 
@@ -777,7 +808,7 @@ dim_plan_product (mat.)
 
 | | |
 | --- | --- |
-| one row per | product × branch × cycle (item grain), or product name × branch × cycle (name grain), for every pair with demand since 2022-23, every cycle from then to three ahead |
+| one row per | product × branch × cycle (item grain), or product name × branch × cycle (name grain), for every pair with demand since 2021-22, every cycle from then to three ahead (so the naive has history from 2022-23 on) |
 | answers | how good is a forecast, and what would the simplest forecasts have said |
 
 | column | meaning |
@@ -871,6 +902,7 @@ v_forecast_accuracy
 
 - **status era**: `jcN_status` changed meaning in April 2025. Up to 2024-25 code 4 was the approved plan; from 2025-26 code 5 is, and 4 means waiting. `is_approved` applies the rule; crm's own screens filter `= 5` and cannot show the older years.
 - **approved is not planned**: a header can be approved for a cycle with no quantity in it. `has_plan` (a quantity exists) and `is_approved` (the workflow passed) are separate flags. Use both.
+- **approved is not published either**: CRM sends the projection to Oracle from branch-manager approval upward, so a cycle can be fully published while most of it never reaches status 5. Use `is_bm_approved` to compare with the projection, `is_approved` to match CRM's screens.
 - **re-saves folded**: a few plan headers carry thousands of identical detail rows. Folded by max per header × cycle; `detail_rows` says how many were folded.
 
 ### fact_plan_jc - the customer plan, long  (materialized)
@@ -886,7 +918,10 @@ v_forecast_accuracy
 | `week1_qty`, `week2_qty`, **`plan_qty`** | planned quantity per fortnight and for the cycle (their sum) |
 | `avg_sell_price`, `plan_value` | planned price per unit; `plan_qty × price`, empty when unpriced. The crm value columns are never read (mixed units) |
 | `achieved_qty` | what crm recorded as achieved - sparse, prefer the actuals tables |
-| `status`, `status_label`, **`is_approved`**, **`has_plan`** | the workflow state, decoded era-aware, and the two independent flags |
+| `status`, `status_label` | the approval ladder: 1 open → 2 pending TE → 3 pending BM → 4 pending RM/BH → 5 approved |
+| **`is_approved`** | fully approved (status 5, or 4 in years up to 2024-25) - CRM's own screens use this |
+| **`is_bm_approved`** | the branch manager has signed off (status 4 or better). **This is the level CRM publishes from**, so it matches the projection; `is_approved` can be far smaller |
+| **`has_plan`** | a quantity exists. Independent of both flags |
 | `is_prospect`, `prospect_name`, `prospect_mc_code` | plans for customers not yet in the master |
 | `is_new_customer`, `is_key_customer`, `is_new_item` | the planner's flags |
 | `segment2`, `segment3`, `segment4`, `category_id` | how the planner classified the product (crm joins names on these too) |
@@ -895,11 +930,12 @@ v_forecast_accuracy
 
 | | |
 | --- | --- |
-| one row per | plan line × cycle it was made in × horizon (1 = next cycle, 2 = the one after) |
-| join on | `target_jc_id` → dim_jc (the cycle it predicts) · `made_in_jc_id` → dim_jc · `plan_id` → fact_plan_jc |
+| one row per | plan line × the cycle the numbers were given for × horizon (1 = the cycle after that one, 2 = the one after that) |
+| join on | `target_jc_id` → dim_jc (the cycle it predicts) · `projected_in_jc_id` (the cycle being planned) and `entered_in_jc_id` (when it was typed) → dim_jc · `plan_id` → fact_plan_jc |
 | answers | in cycle n, what did the planner expect for n+1 and n+2 - and how right was it (join actuals on the target) |
 
-- `made_in_unknown_jc`: crm did not record the cycle for some rows; their target is unknown.
+- **mind the timing**: a cycle's plan is entered during the cycle before it, so rows for JC n were typed during JC n−1 (`entered_in_jc_id`, `entered_on`). A horizon-1 forecast was therefore made two cycles before its target - older information than a four-cycle average uses. `v_forecast_accuracy.lead_time_cycles` carries this so the comparison stays fair.
+- `projected_in_unknown_jc`: crm did not record the cycle for some rows; their target is unknown.
 
 ### fact_lead_plan_jc - the lead plan
 
@@ -919,6 +955,7 @@ v_forecast_accuracy
 | answers | what crm handed to oracle for supply |
 
 - computed by crm when it publishes: matches today's approved plan for the current cycle, drifts on cycles whose plans were edited afterwards. For the detail use the two plan tables; use this to see what was actually sent.
+- `projection1_qty` / `projection2_qty` are fortnights only while `has_fortnight_split` holds (the cycle has started). On later cycles CRM puts the whole quantity in `projection1_qty` and leaves `projection2_qty` at 0.
 
 ### fact_plan_name_jc - the plan side at report grain  (materialized)
 
@@ -931,7 +968,7 @@ v_forecast_accuracy
 | column | meaning |
 | --- | --- |
 | `plan_qty`, `plan_qty_unapproved`, `plan_value`, `plan_lines`, `plan_customers` | the approved customer plan and what is behind it |
-| `forecast_h1_qty`, `forecast_h2_qty` | the planner's forecast for this cycle, made one / two cycles earlier |
+| `forecast_h1_qty`, `forecast_h2_qty` | the planner's forecast for this cycle, labelled one / two cycles earlier (typed a cycle before the label) |
 | `lead_plan_qty` | the approved lead plan (leads crm counts) |
 | `projection_pc_qty`, `projection_lead_qty` | crm's published projection |
 
@@ -944,6 +981,7 @@ v_forecast_accuracy
 | answers | which leads are open, for what, how much, how old |
 
 - `lead_qty` is what crm's report counts as open lead quantity (real items only); `is_temp_item`, `in_pc_plan`, `sample_requested`, `lead_age_days` on the side.
+- `counts_for_crm` (not rejected) is the filter of crm's lead *projection*; crm's open-lead count does not apply it, and neither does v_plan_vs_actual.
 
 ### v_plan_vs_actual - crm's projection report, rebuilt
 
@@ -959,11 +997,13 @@ v_forecast_accuracy
   the history     crm_prev4_qty · crm_prev4_avg_qty · crm_prev4_avg_nonzero_qty · crm_naive_qty
                   our_prev4_qty · our_prev4_avg_qty · our_prev4_avg_nonzero_qty · our_naive_qty
   crm's % diff    plan_vs_avg_pct = (plan − crm non-zero average of the previous four cycles) / that average
-  today's book    open_soc_qty · open_soc_qty_crm_rule · confirmed_quote_qty · open_lead_qty · open_lead_qty_incl_temp
-                  (only on cycles not yet completed - these are today numbers, not cycle numbers)
+  the committed   open_soc_qty · quote_qty · committed_qty · unplanned_qty      (per cycle, from fact_committed_jc)
+                  overdue_soc_qty · overdue_quote_qty                          (past due, carried on the current cycle)
+  today's leads   open_lead_qty · open_lead_qty_incl_temp                      (leads carry no date, so these stay today-totals)
 ```
 
-- `open_soc_qty` is our rule: open schedule lines that are customer demand with no pending cancellation. `open_soc_qty_crm_rule` is crm's looser count (every open line). The second is always the larger.
+- **`unplanned_qty`** = committed − approved plan, never below zero: the adhoc demand the plan does not cover. That is the number a planner has to find stock for.
+- `overdue_quote_qty` is mostly quotes nobody closed rather than live demand - read it as a hygiene number.
 - `primary_inventory_org_id`: the warehouse serving the branch today (latest open mapping); a branch can have several.
 
 ### v_forecast_accuracy - the scoreboard
@@ -979,6 +1019,7 @@ v_forecast_accuracy
 | `coverage_pct` | share of the demand that fell in rows where the method gave a number - the rest it missed entirely |
 | `wape_pct_where_both`, `bias_pct_where_both` | error and bias on the rows it covered (the "where both exist" convention) |
 | `wape_pct_all_rows`, `bias_pct_all_rows` | the same over every row, a missing forecast counted as zero (the harsh convention) |
+| `lead_time_cycles` | how far ahead the method had to commit - naive 13, avg4 1, plan ~0.3, forecast_h1 ~1.3, forecast_h2 ~2.3. A method that speaks later has an easier job; compare with this in view |
 | `rows_all`, `rows_with_demand`, `rows_with_forecast`, `rows_both`, `actual_qty`, `forecast_qty` | the counts behind the percentages |
 
 - lower WAPE is better; bias above zero means over-forecast. Always say which convention a number uses.
@@ -999,4 +1040,63 @@ FROM v_plan_vs_actual WHERE is_current ORDER BY plan_qty DESC LIMIT 20;
 -- the scoreboard, last year, all branches
 SELECT method, coverage_pct, wape_pct_where_both, bias_pct_where_both, wape_pct_all_rows
 FROM v_forecast_accuracy WHERE acc_year = '2025-2026' AND collector_id IS NULL ORDER BY wape_pct_where_both;
+```
+
+### fact_committed_jc - the adhoc book, per cycle
+
+| | |
+| --- | --- |
+| one row per | product name × branch × cycle × horizon bucket |
+| join on | `name_key`, `collector_id`, `jc_id` |
+| answers | what is already committed for a cycle that the plan never carried |
+
+- adhoc orders reach the planners as a quote or an order with a schedule date, outside the planning window. Here they are placed on the cycle their date falls in: an order by its schedule date, a quote by its delivery date.
+- `horizon_bucket`: **in horizon** (this cycle or the next two - what the plan covers) · **overdue** (past due, still open, carried on the current cycle) · **beyond horizon** · **undated**.
+- a plain view, not materialized: the open book changes daily and must never be stale.
+- CRM's one extra rule is applied: a bulk line stops counting once it is 90% delivered.
+
+### fact_plan_reopen - when an approved plan was opened again
+
+| | |
+| --- | --- |
+| one row per | reopen event: cycle, person, market circle, date |
+| answers | how often a settled plan gets changed, and whether before, during or after its own cycle |
+
+- a cycle's plan is normally final once the window closes. Almost every reopen happens *before* the cycle starts (still inside the planning window); a handful happen during or after.
+
+---
+
+## business_plan - the plan's history  `plan_snapshot`, `projection_snapshot`, `plan_approval_history`
+
+crm keeps only today's plan. A plan edited after its cycle ran looks better than it was, so accuracy measured on
+today's plan is an upper bound. These two tables (ours, in `app/repositories/plan_history.py`) keep what the plan
+looked like earlier.
+
+```text
+  crm's dated copies  SCBusinessMonthlyPlanHdrs_* (roughly monthly since mid 2022)  ──► plan_approval_history   backfill, once
+                      SCBusinessMonthlyPlanDtls_* (a few dates since mid 2025)      ──► plan_snapshot            scripts/backfill_plan_history.py
+                      SCBusinessPlanProjections_* (three dates)                     ──► projection_snapshot
+  the etl             on each cycle's hand-off and publish date                     ──► plan_snapshot + projection_snapshot
+                      fact_plan_jc, current year, every run                         ──► plan_approval_history   first seen submitted / approved
+```
+
+| table | one row per | answers |
+| --- | --- | --- |
+| `plan_snapshot` | snapshot date × plan header × cycle with a quantity | what did the plan say for this cycle on that date (`plan_qty`, `is_approved`, `status`, the resolved `name_key`) |
+| `projection_snapshot` | snapshot date × product name × branch × cycle × type | what was actually sent to Oracle on that date - the number supply worked from |
+| `plan_approval_history` | plan header × cycle ever submitted | by when was it submitted, by when approved (`first_seen_*` - "by this date": the copies bracket it) |
+
+- the two moments that matter are **hand-off** (the approved plan goes to the planners, first day of week 4 of the previous cycle) and **publish** (it goes to Oracle, last day of the previous cycle). `snapshot_reason` says which. A trigger missed because the loader did not run that day is caught up for up to three weeks.
+- a cycle's quantities move until its window closes and then settle, so these two points capture what the planners actually received.
+- `PcBusinessPlanReopens` (see `fact_plan_reopen`) and `SCBusinessPlanLogs` (field-level edits, sparse) are mirrored beside them.
+- when a few cycles of snapshots exist, the scoreboard gets a `plan_as_of` method: the plan as it stood when it was handed over.
+
+**Quick checks**
+
+```sql
+SELECT snapshot_date, snapshot_source, count(*), round(sum(plan_qty)::numeric) FROM plan_snapshot GROUP BY 1, 2 ORDER BY 1;
+
+-- the same cycle, then and now
+SELECT s.jc_no, round(sum(s.plan_qty)::numeric) AS then, (SELECT round(sum(plan_qty)::numeric) FROM fact_plan_jc f WHERE f.acc_year = s.acc_year AND f.jc_no = s.jc_no AND f.is_approved) AS now
+FROM plan_snapshot s WHERE s.snapshot_date = '2025-07-17' AND s.acc_year = '2025-2026' AND coalesce(s.is_approved, true) GROUP BY s.acc_year, s.jc_no ORDER BY 1;
 ```

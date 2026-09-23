@@ -64,6 +64,7 @@ The monthly plan the branches fill in for their customers, cycle by cycle. A JC 
 - **SCBusinessMonthlyPlanDtls** - the plan itself: planned and achieved quantity for each cycle.
 - **SCBusinessMonthlyPlanJCDtls** - the forecast entered in each cycle for the coming months.
 - **JourneyCalendars** - the cycle calendar: start and end date of every JC.
+- **JcWeeklyCalendars** - the four weeks inside every cycle. The planning deadlines are set on these weeks.
 - **SPBusinessPlanActualSales** - what was actually sold per cycle, as CRM computes it from invoices, by branch, customer and product name.
 - **SCBusinessPlanProjections** - the approved sales projection per branch and product for each cycle (the numbers sent to Oracle).
 - **SCLeadTargets** - the lead plan: what a branch expects to sell to a lead (a customer not yet won), per product and cycle.
@@ -72,6 +73,15 @@ The monthly plan the branches fill in for their customers, cycle by cycle. A JC 
 - **TempItemmasters** - products that were planned or quoted before they existed in the product list.
 - **LeadDetails** - the leads: a prospect or customer being worked for new business, with its branch, status and the person on it.
 - **LeadProducts** - the products each lead is about, and the quantity the lead is for.
+- **PcBusinessPlanReopens** - every time an approved plan was opened again for editing: who, which circle, which cycle, when.
+- **SCBusinessPlanLogs** - a log of edits to the plan: the old and new quantities, price and forecast. Sparse.
+
+Four tables here are ours, not copies of CRM. CRM only keeps the plan as it is today; these keep what it looked like earlier:
+
+- **plan_snapshot** - the plan as it stood on a date. Filled once from the dated copies CRM kept, then twice a cycle by the loader: when the plan goes to the planners, and when it goes to Oracle.
+- **projection_snapshot** - the numbers actually sent to Oracle, on those same dates.
+- **plan_approval_history** - for every plan line and cycle, by when it was submitted and by when it was approved.
+- **plan_name_alias** - product names the planners spell differently from the product list, mapped to the product they mean. Kept by hand.
 
 ## 7. purchase_master - what we buy and from whom
 

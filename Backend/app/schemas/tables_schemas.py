@@ -410,7 +410,7 @@ TABLES_COLUMNS = {
         "prev_two_yr_value_achieved",
         "last_yr_avg_sell_price",
         "avg_sell_price",
-        "jc1_status",     # jc workflow status 1 .. 6, no master in crm. 1 and 4 cover 96%
+        "jc1_status",     # jc workflow status 1 .. 6, no master in crm. 4 = approved up to 2024-25, 5 from 2025-26 (4 = waiting)
         "jc2_status",
         "jc3_status",
         "jc4_status",
@@ -620,9 +620,91 @@ TABLES_COLUMNS = {
         "jc11_projection2",
         "jc12_projection2",
         "jc13_projection2",
+        "jc1_previous_projection1",
+        "jc2_previous_projection1",
+        "jc3_previous_projection1",
+        "jc4_previous_projection1",
+        "jc5_previous_projection1",
+        "jc6_previous_projection1",
+        "jc7_previous_projection1",
+        "jc8_previous_projection1",
+        "jc9_previous_projection1",
+        "jc10_previous_projection1",
+        "jc11_previous_projection1",
+        "jc12_previous_projection1",
+        "jc13_previous_projection1",
+        "jc1_previous_projection2",
+        "jc2_previous_projection2",
+        "jc3_previous_projection2",
+        "jc4_previous_projection2",
+        "jc5_previous_projection2",
+        "jc6_previous_projection2",
+        "jc7_previous_projection2",
+        "jc8_previous_projection2",
+        "jc9_previous_projection2",
+        "jc10_previous_projection2",
+        "jc11_previous_projection2",
+        "jc12_previous_projection2",
+        "jc13_previous_projection2",
         "creation_date",
         "last_update_date",
-        # skipped: jcN_previous_projection1/2 (history), jcN_projection / jcN_previous_projection (a stale older family), created_by / last_updated_by
+        # jcN_previous_projection1/2: the one prior published version crm keeps
+        # skipped: jcN_projection / jcN_previous_projection (a stale older family), created_by / last_updated_by
+    ],
+
+    "JcWeeklyCalendars": [        # the four weeks of every cycle - the planning windows run on these. upsert, level 0
+        "line_id",                # pk
+        "jcno",                   # the cycle number 1 .. 13
+        "weekno",                 # 1 .. 4
+        "week_period_from",
+        "week_period_to",
+        "acc_yr",                 # 2026-2027, matches JourneyCalendars.acc_year
+        "created_by",
+        "creation_date",
+        "last_updated_by",
+        "last_update_date",
+    ],
+
+    "PcBusinessPlanReopens": [    # every reopen of an approved plan: user, circle, cycle, when. snapshot, level 2
+        "line_id",                # pk
+        "acc_year",
+        "user_id",                # -> Users, 100% match
+        "mc_code",                # -> MarketCircles, lower / trim, 'unknown' when no match
+        "jc_type",                # the cycle as text, JC1 .. JC13
+        "is_reopen",
+        "created_by",
+        "creation_date",          # when
+        "last_updated_by",
+        "last_update_date",
+    ],
+
+    "SCBusinessPlanLogs": [       # field-level edit log of the plan (old / new fortnight qty, price, next-cycle forecasts). sparse. snapshot, level 4
+        "line_id",                # pk
+        "header_id",              # -> SCBusinessMonthlyPlanHdrs, 100% match
+        "type_id",                # 1 / 2, no master
+        "jc_type",                # the cycle as text, JC1 .. JC13
+        "old_user_dfn_avg_sell_price",
+        "old_week1_user_dfn_qty",
+        "old_week2_user_dfn_qty",
+        "old_nextmonth1_qty",
+        "old_nextmonth2_qty",
+        "old_updated_by",
+        "new_user_dfn_avg_sell_price",
+        "new_week1_user_dfn_qty",
+        "new_week2_user_dfn_qty",
+        "new_nextmonth1_qty",
+        "new_nextmonth2_qty",
+        "remarks",
+        "is_te_edited",
+        "is_bh_edited",
+        "mail_flag",
+        "mail_sent_date",
+        "created_by",
+        "creation_date",          # when the edit happened
+        "last_updated_by",
+        "last_update_date",
+        "old_user_dfn_qty",
+        "new_user_dfn_qty",
     ],
 
     "FinancialYears": [           # the accounting years apr - mar. upsert, level 0

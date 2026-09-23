@@ -13,7 +13,40 @@
 
 
 -- ---------------------------------------------------------------------------------------------------------------
--- dim_jc: one row per journey cycle, with the previous / next / same-cycle-last-year links and today's flags.
+-- dim_jc_week: the four weeks of every cycle. the planning windows are defined on these weeks.
+-- ---------------------------------------------------------------------------------------------------------------
+DROP VIEW IF EXISTS dim_jc_week CASCADE;
+
+CREATE VIEW dim_jc_week AS
+SELECT w.line_id                                       AS jc_week_id,
+       w.acc_yr                                        AS acc_year,
+       w.jcno                                          AS jc_no,
+       w.weekno                                        AS week_no,
+       w.week_period_from                              AS week_start,
+       w.week_period_to                                AS week_end,
+       w.week_period_to - w.week_period_from + 1       AS days,
+       -- the weekday a crm cut-off falls on, inside this week (weeks run sunday to saturday)
+       w.week_period_from + ((3 - extract(dow FROM w.week_period_from)::int + 7) % 7) AS wednesday,
+       w.week_period_from + ((4 - extract(dow FROM w.week_period_from)::int + 7) % 7) AS thursday,
+       current_date BETWEEN w.week_period_from AND w.week_period_to AS is_current
+FROM "JcWeeklyCalendars" w;
+
+COMMENT ON VIEW dim_jc_week IS 'The four weeks of every journey cycle, as crm defines them (weeks run Sunday to Saturday). The planning windows sit on these weeks: a cycle''s plan is entered during weeks 2 and 3 of the previous cycle and handed over in week 4. The first week of JC1 and the last of JC13 are short or long so the accounting year fits exactly.';
+COMMENT ON COLUMN dim_jc_week.jc_week_id IS 'The crm row (JcWeeklyCalendars.line_id).';
+COMMENT ON COLUMN dim_jc_week.acc_year IS 'The accounting year, e.g. 2026-2027.';
+COMMENT ON COLUMN dim_jc_week.jc_no IS 'The cycle number 1 .. 13. With acc_year it identifies the cycle in dim_jc.';
+COMMENT ON COLUMN dim_jc_week.week_no IS 'Week 1 .. 4 within the cycle.';
+COMMENT ON COLUMN dim_jc_week.week_start IS 'First day of the week (a Sunday, except the short first week of JC1).';
+COMMENT ON COLUMN dim_jc_week.week_end IS 'Last day of the week (a Saturday, except the long last week of JC13).';
+COMMENT ON COLUMN dim_jc_week.days IS 'Length of the week in days - 7 except at the year''s edges.';
+COMMENT ON COLUMN dim_jc_week.wednesday IS 'The Wednesday of this week - the branch manager''s cut-off day when the week is week 3.';
+COMMENT ON COLUMN dim_jc_week.thursday IS 'The Thursday of this week - the sales executive''s cut-off day when the week is week 2.';
+COMMENT ON COLUMN dim_jc_week.is_current IS 'Today falls in this week.';
+
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- dim_jc: one row per journey cycle, with the previous / next / same-cycle-last-year links, today's flags, and the
+-- dates of the planning window that produced the cycle's plan (they all sit in the previous cycle).
 -- ---------------------------------------------------------------------------------------------------------------
 DROP VIEW IF EXISTS dim_jc CASCADE;
 
@@ -24,6 +57,22 @@ WITH c AS (
            row_number() OVER (ORDER BY j.effective_from) AS jc_seq
     FROM "JourneyCalendars" j
     WHERE j.line_id > 0
+),
+b AS (
+    SELECT c.*,
+           lag(c.acc_year) OVER (ORDER BY c.effective_from) AS prev_acc_year,
+           lag(c.jc_no)    OVER (ORDER BY c.effective_from) AS prev_jc_no
+    FROM c
+),
+win AS (
+    -- the plan for a cycle is entered in the PREVIOUS cycle: se in week 2, te / bm / bh in week 3, hand-over in week 4
+    SELECT acc_year, jc_no,
+           max(thursday)   FILTER (WHERE week_no = 2) AS se_cutoff,
+           max(week_start) FILTER (WHERE week_no = 3) AS te_auto_approval,
+           max(wednesday)  FILTER (WHERE week_no = 3) AS bm_cutoff,
+           max(week_end)   FILTER (WHERE week_no = 3) AS bh_cutoff,
+           max(week_start) FILTER (WHERE week_no = 4) AS handoff_date
+    FROM dim_jc_week GROUP BY acc_year, jc_no
 )
 SELECT c.line_id                                       AS jc_id,
        c.name                                          AS jc_name,
@@ -42,10 +91,18 @@ SELECT c.line_id                                       AS jc_id,
        lead(c.line_id) OVER (ORDER BY c.effective_from) AS next_jc_id,
        lag(c.line_id, 13) OVER (ORDER BY c.effective_from) AS same_jc_last_year_id,
        coalesce(c.is_active, false)                    AS is_active,
-       coalesce(c.is_closed, false)                    AS is_closed
-FROM c
+       coalesce(c.is_closed, false)                    AS is_closed,
+       w.se_cutoff,
+       w.te_auto_approval,
+       w.bm_cutoff,
+       w.bh_cutoff,
+       w.handoff_date,
+       lag(c.effective_to) OVER (ORDER BY c.effective_from) AS publish_date
+FROM b c
+LEFT JOIN win w ON w.acc_year = c.prev_acc_year AND w.jc_no = c.prev_jc_no
 UNION ALL
-SELECT -1, 'unknown', NULL, 'unknown', NULL, NULL, NULL, NULL, NULL, NULL, false, false, false, NULL, NULL, NULL, false, false;
+SELECT -1, 'unknown', NULL, 'unknown', NULL, NULL, NULL, NULL, NULL, NULL, false, false, false, NULL, NULL, NULL, false, false,
+       NULL, NULL, NULL, NULL, NULL, NULL;
 
 COMMENT ON VIEW dim_jc IS 'The planning calendar: one row per journey cycle (JC). A cycle is about four weeks, there are 13 in an accounting year (April to March), and they are contiguous since 2013. Every plan, forecast and actual is bucketed by cycle. Includes the "unknown" cycle (-1) that forecast rows with no cycle point at.';
 COMMENT ON COLUMN dim_jc.jc_id IS 'The cycle id (JourneyCalendars.line_id). Forecast rows carry it.';
@@ -66,6 +123,12 @@ COMMENT ON COLUMN dim_jc.next_jc_id IS 'The cycle after this one.';
 COMMENT ON COLUMN dim_jc.same_jc_last_year_id IS 'The same cycle number one year earlier (13 cycles back). The naive forecast reads its actuals.';
 COMMENT ON COLUMN dim_jc.is_active IS 'crm active flag.';
 COMMENT ON COLUMN dim_jc.is_closed IS 'crm closed flag.';
+COMMENT ON COLUMN dim_jc.se_cutoff IS 'Last day for the sales executives to enter this cycle''s plan: the Thursday of week 2 of the previous cycle.';
+COMMENT ON COLUMN dim_jc.te_auto_approval IS 'The technical executives'' stage closes and auto-approves from this day: the start of week 3 of the previous cycle.';
+COMMENT ON COLUMN dim_jc.bm_cutoff IS 'Last day for the branch managers: the Wednesday of week 3 of the previous cycle; auto-approval follows.';
+COMMENT ON COLUMN dim_jc.bh_cutoff IS 'Last day for the regional / business heads: the last day of week 3 of the previous cycle (they work its final two days); auto-approval follows.';
+COMMENT ON COLUMN dim_jc.handoff_date IS 'The day the approved plan is compiled and handed to the planners: the first day of week 4 of the previous cycle. The as-of point a forecast should be scored against.';
+COMMENT ON COLUMN dim_jc.publish_date IS 'The day the projection is pushed to oracle: the last day of the previous cycle.';
 
 
 -- ---------------------------------------------------------------------------------------------------------------
@@ -97,6 +160,7 @@ FROM lines
 GROUP BY jc_id, acc_year, jc_no, jc_seq, item_id, name_key, collector_id, customer_id, inventory_org_id,
          order_kind, is_inter_company, is_ecommerce, is_sample, is_demand;
 
+CREATE UNIQUE INDEX ix_fact_actual_jc_key ON fact_actual_jc (jc_id, item_id, collector_id, customer_id, inventory_org_id, order_kind, is_inter_company, is_ecommerce, is_sample, is_demand);
 CREATE INDEX ix_fact_actual_jc_jc ON fact_actual_jc (jc_id);
 CREATE INDEX ix_fact_actual_jc_item ON fact_actual_jc (item_id, collector_id, jc_seq);
 CREATE INDEX ix_fact_actual_jc_name ON fact_actual_jc (name_key, collector_id, jc_seq);
@@ -124,20 +188,155 @@ COMMENT ON COLUMN fact_actual_jc.dispatch_lines IS 'How many dispatch lines went
 
 
 -- ---------------------------------------------------------------------------------------------------------------
+-- dim_plan_product: one row per product NAME - the grain the plan, the projection and crm's actuals share -
+-- with the item master name each spelling stands for: itself, a hand-kept alias (plan_name_alias), or the one
+-- master name with the same letters and digits. every name-grain fact carries the resolved key.
+-- with the items behind it.
+-- ---------------------------------------------------------------------------------------------------------------
+DROP MATERIALIZED VIEW IF EXISTS dim_plan_product CASCADE;
+
+CREATE MATERIALIZED VIEW dim_plan_product AS
+WITH names AS (
+    SELECT lower(trim(item_description)) AS name_key, min(item_description) AS spelling, 'plan' AS src FROM "SCBusinessMonthlyPlanHdrs" GROUP BY 1
+    UNION ALL SELECT lower(trim(item_description)), min(item_description), 'projection' FROM "SCBusinessPlanProjections" GROUP BY 1
+    UNION ALL SELECT lower(trim(itemdescription)), min(itemdescription), 'crm_actuals' FROM "SPBusinessPlanActualSales" GROUP BY 1
+    UNION ALL SELECT lower(trim(item_description)), min(item_description), 'item_master' FROM "ItemMasters" WHERE item_id > 0 GROUP BY 1
+),
+keys AS (
+    SELECT name_key,
+           bool_or(src = 'plan')        AS used_in_plan,
+           bool_or(src = 'projection')  AS used_in_projection,
+           bool_or(src = 'crm_actuals') AS used_in_crm_actuals,
+           bool_or(src = 'item_master') AS is_in_item_master,
+           min(spelling) FILTER (WHERE src = 'item_master') AS master_spelling,
+           min(spelling)                AS any_spelling
+    FROM names GROUP BY name_key
+),
+compact AS (
+    -- item master names by their letters and digits only: 'purit rf406mt' and 'purit rf 406 mt' meet here
+    SELECT regexp_replace(name_key, '[^a-z0-9]', '', 'g') AS compact_key, min(name_key) AS name_key, count(*) AS n
+    FROM keys WHERE is_in_item_master GROUP BY 1
+),
+resolved AS (
+    SELECT k.name_key,
+           CASE WHEN k.is_in_item_master   THEN k.name_key
+                WHEN ai.item_id IS NOT NULL THEN lower(trim(ai.item_description))
+                WHEN c.n = 1                THEN c.name_key END AS master_name_key,
+           CASE WHEN k.is_in_item_master   THEN 'exact'
+                WHEN ai.item_id IS NOT NULL THEN 'alias'
+                WHEN c.n = 1                THEN 'spelling' END AS resolved_by
+    FROM keys k
+    LEFT JOIN plan_name_alias a ON a.name_key = k.name_key
+    LEFT JOIN "ItemMasters" ai  ON ai.item_id = a.item_id
+    LEFT JOIN compact c         ON c.compact_key = regexp_replace(k.name_key, '[^a-z0-9]', '', 'g')
+),
+items AS (
+    SELECT lower(trim(i.item_description)) AS name_key,
+           count(*)                     AS item_count,
+           array_agg(i.item_id ORDER BY i.item_id) AS item_ids,
+           count(DISTINCT i.uom)        AS uom_count,
+           min(i.uom)                   AS uom,
+           count(DISTINCT i.item_group) AS item_group_count,
+           min(i.item_group)            AS item_group,
+           count(DISTINCT c.segment2)   AS business_count,
+           min(c.segment2)              AS business,
+           bool_or(c.item_id IS NOT NULL) AS any_performance_chemicals,
+           bool_or(i.status = 'Active' AND i.enabled_flag = 'Y') AS any_usable
+    FROM "ItemMasters" i
+    LEFT JOIN "ItemCategories" c ON c.item_id = i.item_id
+    WHERE i.item_id > 0
+    GROUP BY 1
+),
+primary_item AS (
+    -- the item that shipped most since two years ago, else the lowest id
+    SELECT name_key, item_id
+    FROM (SELECT a.name_key, a.item_id, sum(a.quantity) AS q,
+                 row_number() OVER (PARTITION BY a.name_key ORDER BY sum(a.quantity) DESC, a.item_id) AS rn
+          FROM fact_actual_jc a WHERE a.is_demand GROUP BY a.name_key, a.item_id) x
+    WHERE rn = 1
+),
+temp AS (
+    SELECT lower(trim(temp_itemname)) AS name_key, min(temp_item_id) AS temp_item_id FROM "TempItemmasters" GROUP BY 1
+)
+SELECT k.name_key,
+       coalesce(km.master_spelling, k.any_spelling)    AS product_name,
+       k.is_in_item_master,
+       r.master_name_key,
+       r.resolved_by,
+       r.master_name_key IS NOT NULL                   AS is_resolved,
+       coalesce(it.item_count, 0)                      AS item_count,
+       it.item_ids,
+       coalesce(p.item_id, it.item_ids[1])             AS primary_item_id,
+       coalesce(it.item_count, 0) > 1                  AS has_several_items,
+       coalesce(it.uom_count, 0) > 1                   AS is_mixed_uom,
+       CASE WHEN it.uom_count = 1 THEN it.uom END      AS uom,
+       CASE WHEN it.uom_count = 1 THEN it.uom ELSE pi.uom END AS plan_uom,
+       it.uom_count > 1 AND pi.uom IS NOT NULL         AS uom_assumed,
+       coalesce(it.item_group_count, 0) > 1            AS spans_item_groups,
+       CASE WHEN it.item_group_count = 1 THEN it.item_group END AS item_group,
+       CASE WHEN it.business_count = 1 THEN it.business END     AS business,
+       coalesce(it.any_performance_chemicals, false)   AS is_performance_chemicals,
+       coalesce(it.any_usable, false)                  AS is_usable,
+       t.temp_item_id,
+       t.temp_item_id IS NOT NULL AND NOT k.is_in_item_master AS is_temp_item,
+       k.used_in_plan,
+       k.used_in_projection,
+       k.used_in_crm_actuals
+FROM keys k
+JOIN resolved r          ON r.name_key = k.name_key
+LEFT JOIN keys km        ON km.name_key = r.master_name_key
+LEFT JOIN items it       ON it.name_key = r.master_name_key
+LEFT JOIN primary_item p ON p.name_key = r.master_name_key
+LEFT JOIN dim_item pi    ON pi.item_id = coalesce(p.item_id, it.item_ids[1])
+LEFT JOIN temp t         ON t.name_key = k.name_key;
+
+CREATE UNIQUE INDEX ix_dim_plan_product_key ON dim_plan_product (name_key);
+CREATE INDEX ix_dim_plan_product_primary ON dim_plan_product (primary_item_id);
+
+COMMENT ON MATERIALIZED VIEW dim_plan_product IS 'One row per product NAME - the grain the business plan, the projection and crm''s plan actuals all use - with the items behind that name. A name maps to one item on about half the rows and to several (pack sizes) on the rest; is_mixed_uom and spans_item_groups flag the names whose items cannot simply be added up. Every name seen in the plan, the projection, crm''s actuals or the item master is here.';
+COMMENT ON COLUMN dim_plan_product.name_key IS 'The product name, lower case and trimmed. The join key for every name-grain view.';
+COMMENT ON COLUMN dim_plan_product.product_name IS 'The name for display: the item master''s spelling when the name exists there, else as the plan spells it.';
+COMMENT ON COLUMN dim_plan_product.is_in_item_master IS 'The name exists in the item master exactly as spelled. When false, see master_name_key: most such names still resolve.';
+COMMENT ON COLUMN dim_plan_product.master_name_key IS 'The item master name this spelling stands for: itself, the alias kept in plan_name_alias, or the one master name with the same letters and digits. Empty when nothing matched. Every name-grain fact carries this key as name_key, so plan and actuals meet under the master spelling.';
+COMMENT ON COLUMN dim_plan_product.resolved_by IS 'How the name was resolved: exact / alias / spelling. Empty when it was not.';
+COMMENT ON COLUMN dim_plan_product.is_resolved IS 'The name stands for an item master name.';
+COMMENT ON COLUMN dim_plan_product.item_count IS 'How many items carry this name. 0 when it is not in the item master.';
+COMMENT ON COLUMN dim_plan_product.item_ids IS 'Those item ids.';
+COMMENT ON COLUMN dim_plan_product.primary_item_id IS 'The item that shipped most for this name (customer demand, all history), else the lowest id. Use when one item must stand for the name.';
+COMMENT ON COLUMN dim_plan_product.has_several_items IS 'More than one item carries the name (pack sizes, usually).';
+COMMENT ON COLUMN dim_plan_product.is_mixed_uom IS 'The items behind the name do not share a unit of measure - their quantities must not be added.';
+COMMENT ON COLUMN dim_plan_product.uom IS 'The unit, when all items behind the name share one.';
+COMMENT ON COLUMN dim_plan_product.plan_uom IS 'The unit a plan quantity for this name is read in: the shared unit, or - when the items mix units - the unit of the item that ships most. Never empty for a resolved name.';
+COMMENT ON COLUMN dim_plan_product.uom_assumed IS 'plan_uom was assumed from the item that ships most because the items behind the name mix units. Confirm with the business owner before trusting the quantity.';
+COMMENT ON COLUMN dim_plan_product.spans_item_groups IS 'The items behind the name sit in more than one product group.';
+COMMENT ON COLUMN dim_plan_product.item_group IS 'The product group, when consistent.';
+COMMENT ON COLUMN dim_plan_product.business IS 'The business (segment2), when consistent across the items.';
+COMMENT ON COLUMN dim_plan_product.is_performance_chemicals IS 'At least one item behind the name is a Performance Chemicals product.';
+COMMENT ON COLUMN dim_plan_product.is_usable IS 'At least one item behind the name is active and enabled.';
+COMMENT ON COLUMN dim_plan_product.temp_item_id IS 'The temp item with this name, when one exists.';
+COMMENT ON COLUMN dim_plan_product.is_temp_item IS 'The name exists only as a temp item (planned before the product was created).';
+COMMENT ON COLUMN dim_plan_product.used_in_plan IS 'The name appears in the business plan.';
+COMMENT ON COLUMN dim_plan_product.used_in_projection IS 'The name appears in the projection.';
+COMMENT ON COLUMN dim_plan_product.used_in_crm_actuals IS 'The name appears in crm''s plan actuals.';
+
+
+-- ---------------------------------------------------------------------------------------------------------------
 -- fact_actual_jc_crm: crm's own actuals for the plan (SPBusinessPlanActualSales), unpivoted to one row per cycle.
 -- ---------------------------------------------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS fact_actual_jc_crm CASCADE;
 
 CREATE MATERIALIZED VIEW fact_actual_jc_crm AS
-SELECT j.jc_id,
+SELECT a.header_id                                      AS source_id,
+       j.jc_id,
        a.accyear                                       AS acc_year,
        x.jc_no,
        j.jc_seq,
-       lower(trim(a.itemdescription))                  AS name_key,
+       coalesce(dp.master_name_key, lower(trim(a.itemdescription))) AS name_key,
        a.itemdescription                               AS product_name,
        a.collector_id,
        a.customer_id,
-       x.qty                                           AS quantity,
+       -- crm's writer once divided quantities by 1,000; 2020-21 and 2021-22 were never regenerated. values were not affected.
+       x.qty * CASE WHEN a.accyear <= '2021-2022' THEN 1000 ELSE 1 END AS quantity,
        x.val * 100000                                  AS value_inr,
        a.generate_date                                 AS as_of
 FROM "SPBusinessPlanActualSales" a
@@ -147,21 +346,24 @@ CROSS JOIN LATERAL (VALUES
     (9, a.jc9_qty, a.jc9_value), (10, a.jc10_qty, a.jc10_value), (11, a.jc11_qty, a.jc11_value), (12, a.jc12_qty, a.jc12_value),
     (13, a.jc13_qty, a.jc13_value)) AS x (jc_no, qty, val)
 LEFT JOIN dim_jc j ON j.acc_year = a.accyear AND j.jc_no = x.jc_no
+LEFT JOIN dim_plan_product dp ON dp.name_key = lower(trim(a.itemdescription))
 WHERE coalesce(x.qty, 0) <> 0 OR coalesce(x.val, 0) <> 0;
 
+CREATE UNIQUE INDEX ix_fact_actual_jc_crm_key ON fact_actual_jc_crm (source_id, jc_no);
 CREATE INDEX ix_fact_actual_jc_crm_name ON fact_actual_jc_crm (name_key, collector_id, jc_seq);
 CREATE INDEX ix_fact_actual_jc_crm_jc ON fact_actual_jc_crm (jc_id);
 
-COMMENT ON MATERIALIZED VIEW fact_actual_jc_crm IS 'The actuals crm compares the business plan against, one row per cycle x product name x branch x customer: quantity and value invoiced (from oracle, as crm computes it). Product is a NAME, not an item id. Counts everything invoiced except e-commerce - samples, cogt and group company included. Differs from our dispatch-based actuals by design; see v_actual_bridge.';
+COMMENT ON MATERIALIZED VIEW fact_actual_jc_crm IS 'The actuals crm compares the business plan against, one row per cycle x product name x branch x customer: quantity and value invoiced (from oracle, as crm computes it). Product is a NAME, not an item id. Counts everything invoiced except e-commerce - samples, cogt and group company included. Differs from our dispatch-based actuals by design; see v_actual_bridge. Quantities for 2020-21 and 2021-22 are multiplied by 1,000 here: crm''s writer stored those two years divided by 1,000 and never regenerated them (values were unaffected).';
+COMMENT ON COLUMN fact_actual_jc_crm.source_id IS 'The crm row the cycle came from (SPBusinessPlanActualSales.header_id). With jc_no, the unique key.';
 COMMENT ON COLUMN fact_actual_jc_crm.jc_id IS 'The cycle. Joins dim_jc.';
 COMMENT ON COLUMN fact_actual_jc_crm.acc_year IS 'The accounting year.';
 COMMENT ON COLUMN fact_actual_jc_crm.jc_no IS 'Cycle number 1 .. 13.';
 COMMENT ON COLUMN fact_actual_jc_crm.jc_seq IS 'Running cycle number.';
-COMMENT ON COLUMN fact_actual_jc_crm.name_key IS 'The product name, lower case and trimmed. Joins dim_plan_product and fact_actual_jc.name_key.';
-COMMENT ON COLUMN fact_actual_jc_crm.product_name IS 'The product name as crm spells it.';
+COMMENT ON COLUMN fact_actual_jc_crm.name_key IS 'The product name key, resolved to the item master spelling where crm''s spelling differs (dim_plan_product.master_name_key). Joins dim_plan_product and fact_actual_jc.name_key.';
+COMMENT ON COLUMN fact_actual_jc_crm.product_name IS 'The product name as crm spells it (may differ from the key).';
 COMMENT ON COLUMN fact_actual_jc_crm.collector_id IS 'The branch. Joins dim_collector.';
 COMMENT ON COLUMN fact_actual_jc_crm.customer_id IS 'The customer. Joins dim_customer.';
-COMMENT ON COLUMN fact_actual_jc_crm.quantity IS 'Quantity invoiced in the cycle.';
+COMMENT ON COLUMN fact_actual_jc_crm.quantity IS 'Quantity invoiced in the cycle, in the product''s unit (2020-21 and 2021-22 corrected x1,000, see the view comment).';
 COMMENT ON COLUMN fact_actual_jc_crm.value_inr IS 'Value invoiced in rupees (crm stores lakhs; multiplied back).';
 COMMENT ON COLUMN fact_actual_jc_crm.as_of IS 'When crm generated the row.';
 
@@ -225,106 +427,6 @@ COMMENT ON COLUMN v_actual_bridge.in_crm IS 'crm invoiced something for it.';
 
 
 -- ---------------------------------------------------------------------------------------------------------------
--- dim_plan_product: one row per product NAME - the grain the plan, the projection and crm's actuals share -
--- with the items behind it.
--- ---------------------------------------------------------------------------------------------------------------
-DROP MATERIALIZED VIEW IF EXISTS dim_plan_product CASCADE;
-
-CREATE MATERIALIZED VIEW dim_plan_product AS
-WITH names AS (
-    SELECT lower(trim(item_description)) AS name_key, min(item_description) AS spelling, 'plan' AS src FROM "SCBusinessMonthlyPlanHdrs" GROUP BY 1
-    UNION ALL SELECT lower(trim(item_description)), min(item_description), 'projection' FROM "SCBusinessPlanProjections" GROUP BY 1
-    UNION ALL SELECT lower(trim(itemdescription)), min(itemdescription), 'crm_actuals' FROM "SPBusinessPlanActualSales" GROUP BY 1
-    UNION ALL SELECT lower(trim(item_description)), min(item_description), 'item_master' FROM "ItemMasters" WHERE item_id > 0 GROUP BY 1
-),
-keys AS (
-    SELECT name_key,
-           bool_or(src = 'plan')        AS used_in_plan,
-           bool_or(src = 'projection')  AS used_in_projection,
-           bool_or(src = 'crm_actuals') AS used_in_crm_actuals,
-           bool_or(src = 'item_master') AS is_in_item_master,
-           min(spelling) FILTER (WHERE src = 'item_master') AS master_spelling,
-           min(spelling)                AS any_spelling
-    FROM names GROUP BY name_key
-),
-items AS (
-    SELECT lower(trim(i.item_description)) AS name_key,
-           count(*)                     AS item_count,
-           array_agg(i.item_id ORDER BY i.item_id) AS item_ids,
-           count(DISTINCT i.uom)        AS uom_count,
-           min(i.uom)                   AS uom,
-           count(DISTINCT i.item_group) AS item_group_count,
-           min(i.item_group)            AS item_group,
-           count(DISTINCT c.segment2)   AS business_count,
-           min(c.segment2)              AS business,
-           bool_or(c.item_id IS NOT NULL) AS any_performance_chemicals,
-           bool_or(i.status = 'Active' AND i.enabled_flag = 'Y') AS any_usable
-    FROM "ItemMasters" i
-    LEFT JOIN "ItemCategories" c ON c.item_id = i.item_id
-    WHERE i.item_id > 0
-    GROUP BY 1
-),
-primary_item AS (
-    -- the item that shipped most since two years ago, else the lowest id
-    SELECT name_key, item_id
-    FROM (SELECT a.name_key, a.item_id, sum(a.quantity) AS q,
-                 row_number() OVER (PARTITION BY a.name_key ORDER BY sum(a.quantity) DESC, a.item_id) AS rn
-          FROM fact_actual_jc a WHERE a.is_demand GROUP BY a.name_key, a.item_id) x
-    WHERE rn = 1
-),
-temp AS (
-    SELECT lower(trim(temp_itemname)) AS name_key, min(temp_item_id) AS temp_item_id FROM "TempItemmasters" GROUP BY 1
-)
-SELECT k.name_key,
-       coalesce(k.master_spelling, k.any_spelling)     AS product_name,
-       k.is_in_item_master,
-       coalesce(it.item_count, 0)                      AS item_count,
-       it.item_ids,
-       coalesce(p.item_id, it.item_ids[1])             AS primary_item_id,
-       coalesce(it.item_count, 0) > 1                  AS has_several_items,
-       coalesce(it.uom_count, 0) > 1                   AS is_mixed_uom,
-       CASE WHEN it.uom_count = 1 THEN it.uom END      AS uom,
-       coalesce(it.item_group_count, 0) > 1            AS spans_item_groups,
-       CASE WHEN it.item_group_count = 1 THEN it.item_group END AS item_group,
-       CASE WHEN it.business_count = 1 THEN it.business END     AS business,
-       coalesce(it.any_performance_chemicals, false)   AS is_performance_chemicals,
-       coalesce(it.any_usable, false)                  AS is_usable,
-       t.temp_item_id,
-       t.temp_item_id IS NOT NULL AND NOT k.is_in_item_master AS is_temp_item,
-       k.used_in_plan,
-       k.used_in_projection,
-       k.used_in_crm_actuals
-FROM keys k
-LEFT JOIN items it       ON it.name_key = k.name_key
-LEFT JOIN primary_item p ON p.name_key = k.name_key
-LEFT JOIN temp t         ON t.name_key = k.name_key;
-
-CREATE UNIQUE INDEX ix_dim_plan_product_key ON dim_plan_product (name_key);
-CREATE INDEX ix_dim_plan_product_primary ON dim_plan_product (primary_item_id);
-
-COMMENT ON MATERIALIZED VIEW dim_plan_product IS 'One row per product NAME - the grain the business plan, the projection and crm''s plan actuals all use - with the items behind that name. A name maps to one item on about half the rows and to several (pack sizes) on the rest; is_mixed_uom and spans_item_groups flag the names whose items cannot simply be added up. Every name seen in the plan, the projection, crm''s actuals or the item master is here.';
-COMMENT ON COLUMN dim_plan_product.name_key IS 'The product name, lower case and trimmed. The join key for every name-grain view.';
-COMMENT ON COLUMN dim_plan_product.product_name IS 'The name for display: the item master''s spelling when the name exists there, else as the plan spells it.';
-COMMENT ON COLUMN dim_plan_product.is_in_item_master IS 'The name exists in the item master. False for a few hundred plan names (typos, retired products, temp items).';
-COMMENT ON COLUMN dim_plan_product.item_count IS 'How many items carry this name. 0 when it is not in the item master.';
-COMMENT ON COLUMN dim_plan_product.item_ids IS 'Those item ids.';
-COMMENT ON COLUMN dim_plan_product.primary_item_id IS 'The item that shipped most for this name (customer demand, all history), else the lowest id. Use when one item must stand for the name.';
-COMMENT ON COLUMN dim_plan_product.has_several_items IS 'More than one item carries the name (pack sizes, usually).';
-COMMENT ON COLUMN dim_plan_product.is_mixed_uom IS 'The items behind the name do not share a unit of measure - their quantities must not be added.';
-COMMENT ON COLUMN dim_plan_product.uom IS 'The unit, when all items behind the name share one.';
-COMMENT ON COLUMN dim_plan_product.spans_item_groups IS 'The items behind the name sit in more than one product group.';
-COMMENT ON COLUMN dim_plan_product.item_group IS 'The product group, when consistent.';
-COMMENT ON COLUMN dim_plan_product.business IS 'The business (segment2), when consistent across the items.';
-COMMENT ON COLUMN dim_plan_product.is_performance_chemicals IS 'At least one item behind the name is a Performance Chemicals product.';
-COMMENT ON COLUMN dim_plan_product.is_usable IS 'At least one item behind the name is active and enabled.';
-COMMENT ON COLUMN dim_plan_product.temp_item_id IS 'The temp item with this name, when one exists.';
-COMMENT ON COLUMN dim_plan_product.is_temp_item IS 'The name exists only as a temp item (planned before the product was created).';
-COMMENT ON COLUMN dim_plan_product.used_in_plan IS 'The name appears in the business plan.';
-COMMENT ON COLUMN dim_plan_product.used_in_projection IS 'The name appears in the projection.';
-COMMENT ON COLUMN dim_plan_product.used_in_crm_actuals IS 'The name appears in crm''s plan actuals.';
-
-
--- ---------------------------------------------------------------------------------------------------------------
 -- v_plan_product_mix: how a product name splits into items per branch, from what shipped in the last 4 completed
 -- cycles (all history as fallback). the disaggregation key for a name-level number.
 -- ---------------------------------------------------------------------------------------------------------------
@@ -376,12 +478,12 @@ CREATE MATERIALIZED VIEW fact_forecast_baseline_item AS
 WITH cycles AS (
     SELECT jc_id, jc_seq, acc_year, jc_no, jc_start, jc_end, is_completed, is_current, is_future
     FROM dim_jc
-    WHERE jc_id > 0 AND acc_year >= '2022-2023'
+    WHERE jc_id > 0 AND acc_year >= '2021-2022'
       AND jc_seq <= (SELECT jc_seq FROM dim_jc WHERE is_current) + 3
 ),
 pairs AS (
     SELECT item_id, collector_id, min(jc_seq) AS first_seq
-    FROM fact_actual_jc WHERE is_demand AND acc_year >= '2022-2023'
+    FROM fact_actual_jc WHERE is_demand AND acc_year >= '2021-2022'
     GROUP BY 1, 2
 ),
 actual AS (
@@ -421,7 +523,7 @@ FROM lagged;
 CREATE UNIQUE INDEX ix_fcbi_key ON fact_forecast_baseline_item (item_id, collector_id, jc_seq);
 CREATE INDEX ix_fcbi_jc ON fact_forecast_baseline_item (jc_id);
 
-COMMENT ON MATERIALIZED VIEW fact_forecast_baseline_item IS 'The accuracy harness at product x branch grain. For every product x branch that had customer demand since 2022-23, one row per cycle from then to three cycles ahead: the actual demand, the naive forecast (the same cycle a year earlier), the average of the previous four cycles (plain, and over non-zero cycles the way crm averages), and the absolute errors on completed cycles. WAPE for a forecast over any slice = sum(abs error) / sum(actual).';
+COMMENT ON MATERIALIZED VIEW fact_forecast_baseline_item IS 'The accuracy harness at product x branch grain. For every product x branch that had customer demand since 2021-22, one row per cycle from then to three cycles ahead: the actual demand, the naive forecast (the same cycle a year earlier), the average of the previous four cycles (plain, and over non-zero cycles the way crm averages), and the absolute errors on completed cycles. WAPE for a forecast over any slice = sum(abs error) / sum(actual).';
 COMMENT ON COLUMN fact_forecast_baseline_item.item_id IS 'The product. Joins dim_item.';
 COMMENT ON COLUMN fact_forecast_baseline_item.collector_id IS 'The branch. Joins dim_collector.';
 COMMENT ON COLUMN fact_forecast_baseline_item.jc_id IS 'The cycle. Joins dim_jc.';
@@ -446,12 +548,12 @@ CREATE MATERIALIZED VIEW fact_forecast_baseline_name AS
 WITH cycles AS (
     SELECT jc_id, jc_seq, acc_year, jc_no, is_completed, is_current, is_future
     FROM dim_jc
-    WHERE jc_id > 0 AND acc_year >= '2022-2023'
+    WHERE jc_id > 0 AND acc_year >= '2021-2022'
       AND jc_seq <= (SELECT jc_seq FROM dim_jc WHERE is_current) + 3
 ),
 pairs AS (
     SELECT name_key, collector_id, min(jc_seq) AS first_seq
-    FROM fact_actual_jc WHERE is_demand AND acc_year >= '2022-2023'
+    FROM fact_actual_jc WHERE is_demand AND acc_year >= '2021-2022'
     GROUP BY 1, 2
 ),
 actual AS (
@@ -514,9 +616,15 @@ COMMENT ON COLUMN fact_forecast_baseline_name.avg4_nonzero_abs_error IS 'abs(act
 -- second half: the plans (customer plan, its next-cycle forecasts, the lead plan, crm's rolled-up projection),
 -- the open leads, crm's plan-vs-actual report rebuilt on our data, and the accuracy scoreboard.
 --
---   status    jcN_status on the plan headers changed meaning in april 2025: up to 2024-25 "4" was the approved
---             plan and 5 did not exist; from 2025-26 "5" is approved and 4 is waiting for approval. is_approved
---             applies the era rule; crm's own screens filter = 5 and so cannot show the older years.
+--   how a cycle's plan is made (crm, sep 2026): the plan for cycle T is entered during weeks 2 and 3 of cycle T-1,
+--             sales executive -> technical executive -> branch manager -> regional / business head, each with its own
+--             cut-off day. the same entry gives T (split into two fortnights) and single quantities for T+1 and T+2.
+--             the approved plan is handed to the planners on the first day of week 4 and pushed to oracle on the last
+--             day of T-1. dim_jc carries those dates.
+--   status    the workflow ladder: 1 open -> 2 pending TE -> 3 pending BM -> 4 BM approved, pending RM/BH -> 5 fully
+--             approved. it changed meaning in april 2025: up to 2024-25 "4" was the final approval and 5 did not
+--             exist. is_approved applies that era rule. crm publishes to oracle from status 4 upward, so is_bm_approved
+--             is the flag that matches what crm actually ships.
 --   approved  approved is not the same as planned: a header can be approved for a cycle with no quantity in it.
 --             has_plan says a quantity exists; is_approved says the workflow passed. use both.
 --   dupes     a few plan headers carry thousands of identical detail rows (re-saves). folded by max per header x cycle.
@@ -579,7 +687,7 @@ SELECT r.header_id                                      AS plan_id,
        r.jc_no,
        coalesce(j.jc_id, -1)                            AS jc_id,
        j.jc_seq,
-       lower(trim(r.item_description))                  AS name_key,
+       coalesce(dp.master_name_key, lower(trim(r.item_description))) AS name_key,
        r.item_description                               AS product_name,
        r.category_id,
        r.segment2,
@@ -602,25 +710,24 @@ SELECT r.header_id                                      AS plan_id,
        r.avg_sell_price,
        r.plan_qty * r.avg_sell_price                    AS plan_value,
        r.status,
-       CASE WHEN r.status = 5 THEN 'approved'
-            WHEN r.status = 4 AND r.acc_year <= '2024-2025' THEN 'approved'
-            WHEN r.status = 4 THEN 'awaiting approval'
-            WHEN r.status = 1 THEN 'not submitted'
-            WHEN r.status IN (2, 3) THEN 'in approval'
-            WHEN r.status = 6 THEN 'other'
-            ELSE 'unknown' END                          AS status_label,
+       CASE r.status WHEN 1 THEN 'open, not submitted' WHEN 2 THEN 'pending TE'
+                     WHEN 3 THEN 'pending BM'          WHEN 4 THEN 'pending RM/BH'
+                     WHEN 5 THEN 'approved'            WHEN 6 THEN 'approved (admin)'
+                     WHEN 0 THEN 'legacy'              ELSE 'unknown' END AS status_label,
        r.status = 5 OR (r.status = 4 AND r.acc_year <= '2024-2025') AS is_approved,
+       r.status >= 4                                    AS is_bm_approved,
        r.detail_rows,
        r.creation_date                                  AS plan_created_at,
        r.last_update_date                               AS plan_updated_at
 FROM rows_ r
 LEFT JOIN dim_jc j ON j.acc_year = r.acc_year AND j.jc_no = r.jc_no
+LEFT JOIN dim_plan_product dp ON dp.name_key = lower(trim(r.item_description))
 WHERE r.plan_qty > 0 OR r.achieved_qty > 0 OR r.status <> 1;
 
 CREATE INDEX ix_fact_plan_jc_name ON fact_plan_jc (name_key, collector_id, jc_seq);
 CREATE INDEX ix_fact_plan_jc_jc ON fact_plan_jc (jc_id);
 CREATE INDEX ix_fact_plan_jc_customer ON fact_plan_jc (customer_id, jc_seq);
-CREATE INDEX ix_fact_plan_jc_plan ON fact_plan_jc (plan_id);
+CREATE UNIQUE INDEX ix_fact_plan_jc_key ON fact_plan_jc (plan_id, jc_no);
 
 COMMENT ON MATERIALIZED VIEW fact_plan_jc IS 'The customer business plan, one row per plan header (year x customer x branch x product NAME) x cycle: the planned quantity (first and second fortnight), the achieved quantity crm recorded, the planned selling price and value, and the approval status. Rows with nothing in them (no quantity, nothing achieved, not submitted) are left out. is_approved applies the status era rule (4 up to 2024-25, 5 from 2025-26); has_plan says a quantity exists - the two are independent. Duplicate detail rows (re-saves) are folded by max.';
 COMMENT ON COLUMN fact_plan_jc.plan_id IS 'The plan header (SCBusinessMonthlyPlanHdrs.header_id).';
@@ -628,8 +735,8 @@ COMMENT ON COLUMN fact_plan_jc.acc_year IS 'The accounting year of the plan, e.g
 COMMENT ON COLUMN fact_plan_jc.jc_no IS 'Cycle number 1 .. 13.';
 COMMENT ON COLUMN fact_plan_jc.jc_id IS 'The cycle. Joins dim_jc. -1 when the year has no calendar.';
 COMMENT ON COLUMN fact_plan_jc.jc_seq IS 'Running cycle number, for previous / next arithmetic.';
-COMMENT ON COLUMN fact_plan_jc.name_key IS 'The product name, lower case and trimmed. Joins dim_plan_product, fact_actual_jc.name_key, fact_forecast_baseline_name.name_key.';
-COMMENT ON COLUMN fact_plan_jc.product_name IS 'The product name as planned.';
+COMMENT ON COLUMN fact_plan_jc.name_key IS 'The product name key, resolved to the item master spelling where the planner''s differs (dim_plan_product.master_name_key). Joins dim_plan_product, fact_actual_jc.name_key, fact_forecast_baseline_name.name_key.';
+COMMENT ON COLUMN fact_plan_jc.product_name IS 'The product name as the planner spelled it (may differ from the key).';
 COMMENT ON COLUMN fact_plan_jc.category_id IS 'The item category the planner picked. Joins ItemCategories.';
 COMMENT ON COLUMN fact_plan_jc.segment2 IS 'Item segment 2 (division) as planned. crm joins products on name + segment2 + segment3.';
 COMMENT ON COLUMN fact_plan_jc.segment3 IS 'Item segment 3 (business) as planned.';
@@ -650,26 +757,30 @@ COMMENT ON COLUMN fact_plan_jc.has_plan IS 'A quantity was planned for the cycle
 COMMENT ON COLUMN fact_plan_jc.achieved_qty IS 'The quantity crm recorded as achieved against the plan. Sparse; prefer fact_actual_jc / fact_actual_jc_crm for actuals.';
 COMMENT ON COLUMN fact_plan_jc.avg_sell_price IS 'The planned average selling price per unit, rupees. Empty when not given.';
 COMMENT ON COLUMN fact_plan_jc.plan_value IS 'plan_qty x avg_sell_price, rupees. Empty when unpriced. The crm value columns are not used: their units are mixed.';
-COMMENT ON COLUMN fact_plan_jc.status IS 'crm''s workflow status code for the cycle, 1 .. 6. No master table in crm; see status_label.';
-COMMENT ON COLUMN fact_plan_jc.status_label IS 'The status in words, era aware: approved / awaiting approval / in approval / not submitted / other. Inferred from the data, crm has no decode table.';
-COMMENT ON COLUMN fact_plan_jc.is_approved IS 'The plan passed approval for this cycle: status 5, or status 4 in years up to 2024-25 (the code changed meaning in April 2025). crm''s screens filter = 5 only.';
+COMMENT ON COLUMN fact_plan_jc.status IS 'crm''s workflow status code for the cycle: 1 open, 2 pending technical executive, 3 pending branch manager, 4 branch manager approved and pending regional / business head, 5 fully approved. 6 is an admin edit and 0 a legacy value; neither is set by any crm procedure. No master table in crm.';
+COMMENT ON COLUMN fact_plan_jc.status_label IS 'The status in words, as the approval ladder runs: open, not submitted / pending TE / pending BM / pending RM/BH / approved. From crm''s own workflow, sep 2026.';
+COMMENT ON COLUMN fact_plan_jc.is_approved IS 'The plan passed FULL approval for this cycle: status 5, or status 4 in years up to 2024-25 (the code changed meaning in April 2025). crm''s screens filter = 5 only. Stricter than what crm publishes - see is_bm_approved.';
+COMMENT ON COLUMN fact_plan_jc.is_bm_approved IS 'The branch manager has approved (status 4 or better). This is the level crm publishes to oracle from, so it matches the projection better than is_approved does; in some cycles a large part of the plan never moves past 4.';
 COMMENT ON COLUMN fact_plan_jc.detail_rows IS 'How many detail rows crm held for the header (more than one = re-saves, folded by max).';
 COMMENT ON COLUMN fact_plan_jc.plan_created_at IS 'When the plan header was created.';
 COMMENT ON COLUMN fact_plan_jc.plan_updated_at IS 'When the plan header was last changed.';
 
 
 -- ---------------------------------------------------------------------------------------------------------------
--- fact_plan_forecast: the planner's rolling forecast, long: one row per plan line x cycle it was made in x horizon
--- (1 = the next cycle, 2 = the one after). the target cycle is what it predicts.
+-- fact_plan_forecast: the planner's rolling forecast, long: one row per plan line x the cycle crm labels it with x
+-- horizon (1 = the cycle after the label, 2 = the one after that). the target cycle is what it predicts.
+-- the label (jc_type) is one cycle AFTER the cycle the rows were entered in: rows labelled JC7 were typed during JC6.
+-- so a horizon-1 forecast was really made two cycles before its target. entered_in_jc_id carries the entry cycle.
 -- ---------------------------------------------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS fact_plan_forecast CASCADE;
 
 CREATE MATERIALIZED VIEW fact_plan_forecast AS
 WITH f AS (
     SELECT d.header_id                     AS plan_id,
-           x.jc_type                       AS made_in_jc_id,
+           x.jc_type                       AS projected_in_jc_id,
            max(x.jc_nextmonth1_qty)        AS next1_qty,
            max(x.jc_nextmonth2_qty)        AS next2_qty,
+           min(x.creation_date)            AS created_at,
            max(x.last_update_date)         AS updated_at,
            count(*)                        AS detail_rows
     FROM "SCBusinessMonthlyPlanJCDtls" x
@@ -678,9 +789,12 @@ WITH f AS (
 )
 SELECT f.plan_id,
        h.acc_year,
-       f.made_in_jc_id,
-       m.jc_seq                                         AS made_in_jc_seq,
-       m.jc_no                                          AS made_in_jc_no,
+       f.projected_in_jc_id,
+       m.jc_seq                                         AS projected_in_jc_seq,
+       m.jc_no                                          AS projected_in_jc_no,
+       e.jc_id                                          AS entered_in_jc_id,
+       e.jc_no                                          AS entered_in_jc_no,
+       f.created_at::date                               AS entered_on,
        z.horizon,
        t.jc_id                                          AS target_jc_id,
        m.jc_seq + z.horizon                             AS target_jc_seq,
@@ -692,29 +806,34 @@ SELECT f.plan_id,
        h.collector_id,
        h.customer_id = -1                               AS is_prospect,
        z.forecast_qty,
-       f.made_in_jc_id = -1                             AS made_in_unknown_jc,
+       f.projected_in_jc_id = -1                        AS projected_in_unknown_jc,
        f.detail_rows,
+       f.created_at                                     AS forecast_entered_at,
        f.updated_at                                     AS forecast_updated_at
 FROM f
 JOIN "SCBusinessMonthlyPlanHdrs" h ON h.header_id = f.plan_id
-LEFT JOIN dim_jc m ON m.jc_id = f.made_in_jc_id
+LEFT JOIN dim_jc m ON m.jc_id = f.projected_in_jc_id
+LEFT JOIN dim_jc e ON e.jc_id > 0 AND f.created_at::date BETWEEN e.jc_start AND e.jc_end
 CROSS JOIN LATERAL (VALUES (1, f.next1_qty), (2, f.next2_qty)) AS z (horizon, forecast_qty)
 LEFT JOIN dim_jc t ON t.jc_seq = m.jc_seq + z.horizon
 WHERE coalesce(z.forecast_qty, 0) <> 0;
 
 CREATE INDEX ix_fact_plan_forecast_target ON fact_plan_forecast (name_key, collector_id, target_jc_seq);
-CREATE INDEX ix_fact_plan_forecast_made ON fact_plan_forecast (made_in_jc_id);
-CREATE INDEX ix_fact_plan_forecast_plan ON fact_plan_forecast (plan_id);
+CREATE INDEX ix_fact_plan_forecast_projected ON fact_plan_forecast (projected_in_jc_id);
+CREATE UNIQUE INDEX ix_fact_plan_forecast_key ON fact_plan_forecast (plan_id, projected_in_jc_id, horizon);
 
-COMMENT ON MATERIALIZED VIEW fact_plan_forecast IS 'The planner''s rolling forecast (SCBusinessMonthlyPlanJCDtls): in each cycle the planner may give a quantity for the next cycle and the one after. One row per plan line x cycle it was made in x horizon (1 = next cycle, 2 = the one after), with the target cycle it predicts. Zero forecasts are left out. Score it against actuals by joining the target cycle.';
+COMMENT ON MATERIALIZED VIEW fact_plan_forecast IS 'The planner''s rolling forecast (SCBusinessMonthlyPlanJCDtls). When a branch enters the plan for a cycle it also gives one quantity for each of the next two cycles. One row per plan line x the cycle the numbers were given for x horizon (1 = the cycle after that one, 2 = the one after that), with the target cycle they predict. Mind the timing: the plan for cycle T is entered during T-1 (entered_in_jc_id, entered_on), so a horizon-1 forecast was made two cycles before its target - older information than a four-cycle average has. Zero forecasts are left out. Score it against actuals by joining the target cycle.';
 COMMENT ON COLUMN fact_plan_forecast.plan_id IS 'The plan header the forecast belongs to. Joins fact_plan_jc.plan_id.';
 COMMENT ON COLUMN fact_plan_forecast.acc_year IS 'The accounting year of the plan header.';
-COMMENT ON COLUMN fact_plan_forecast.made_in_jc_id IS 'The cycle the forecast was made in. Joins dim_jc. -1 when crm did not record it.';
-COMMENT ON COLUMN fact_plan_forecast.made_in_jc_seq IS 'Running number of the cycle it was made in.';
-COMMENT ON COLUMN fact_plan_forecast.made_in_jc_no IS 'Cycle number it was made in, 1 .. 13.';
-COMMENT ON COLUMN fact_plan_forecast.horizon IS '1 = a forecast for the next cycle, 2 = for the cycle after that.';
+COMMENT ON COLUMN fact_plan_forecast.projected_in_jc_id IS 'The cycle the numbers were given for (crm''s jc_type): the plan cycle whose entry window produced them. Joins dim_jc. -1 when crm did not record it. The typing happened one cycle earlier - see entered_in_jc_id.';
+COMMENT ON COLUMN fact_plan_forecast.projected_in_jc_seq IS 'Running number of that cycle.';
+COMMENT ON COLUMN fact_plan_forecast.projected_in_jc_no IS 'That cycle''s number, 1 .. 13.';
+COMMENT ON COLUMN fact_plan_forecast.entered_in_jc_id IS 'The cycle the rows were actually typed in (from creation_date) - the information cutoff. Normally the cycle before projected_in_jc_id, since a cycle''s plan is entered during the previous one. Joins dim_jc.';
+COMMENT ON COLUMN fact_plan_forecast.entered_in_jc_no IS 'That cycle''s number, 1 .. 13.';
+COMMENT ON COLUMN fact_plan_forecast.entered_on IS 'The day the rows were created.';
+COMMENT ON COLUMN fact_plan_forecast.horizon IS '1 = a forecast for the cycle after the one being planned, 2 = for the cycle after that.';
 COMMENT ON COLUMN fact_plan_forecast.target_jc_id IS 'The cycle the forecast is for. Joins dim_jc. Empty when the cycle it was made in is unknown.';
-COMMENT ON COLUMN fact_plan_forecast.target_jc_seq IS 'Running number of the target cycle = made_in_jc_seq + horizon.';
+COMMENT ON COLUMN fact_plan_forecast.target_jc_seq IS 'Running number of the target cycle = projected_in_jc_seq + horizon.';
 COMMENT ON COLUMN fact_plan_forecast.target_acc_year IS 'Accounting year of the target cycle.';
 COMMENT ON COLUMN fact_plan_forecast.target_jc_no IS 'Cycle number of the target cycle.';
 COMMENT ON COLUMN fact_plan_forecast.name_key IS 'The product name, lower case and trimmed. Joins dim_plan_product.';
@@ -723,8 +842,9 @@ COMMENT ON COLUMN fact_plan_forecast.customer_id IS 'The customer. Joins dim_cus
 COMMENT ON COLUMN fact_plan_forecast.collector_id IS 'The branch. Joins dim_collector.';
 COMMENT ON COLUMN fact_plan_forecast.is_prospect IS 'The plan is for a prospect.';
 COMMENT ON COLUMN fact_plan_forecast.forecast_qty IS 'The forecast quantity for the target cycle, in the product''s unit.';
-COMMENT ON COLUMN fact_plan_forecast.made_in_unknown_jc IS 'crm did not record which cycle the forecast was made in, so the target is unknown too.';
+COMMENT ON COLUMN fact_plan_forecast.projected_in_unknown_jc IS 'crm did not record which cycle the numbers were given for, so the target is unknown too.';
 COMMENT ON COLUMN fact_plan_forecast.detail_rows IS 'How many crm rows were folded into this one (re-saves).';
+COMMENT ON COLUMN fact_plan_forecast.forecast_entered_at IS 'When the forecast rows were created.';
 COMMENT ON COLUMN fact_plan_forecast.forecast_updated_at IS 'When the forecast was last changed.';
 
 
@@ -841,13 +961,14 @@ SELECT p.line_id                                        AS projection_id,
        x.jc_no,
        coalesce(j.jc_id, -1)                            AS jc_id,
        j.jc_seq,
-       lower(trim(p.item_description))                  AS name_key,
+       coalesce(dp.master_name_key, lower(trim(p.item_description))) AS name_key,
        p.item_description                               AS product_name,
        p.item_id,
        p.collector_id,
-       coalesce(x.p1, 0)                                AS week1_qty,
-       coalesce(x.p2, 0)                                AS week2_qty,
+       coalesce(x.p1, 0)                                AS projection1_qty,
+       coalesce(x.p2, 0)                                AS projection2_qty,
        coalesce(x.p1, 0) + coalesce(x.p2, 0)            AS projection_qty,
+       j.jc_seq <= (SELECT jc_seq FROM dim_jc WHERE is_current) AS has_fortnight_split,
        p.creation_date                                  AS projection_created_at,
        p.last_update_date                               AS projection_updated_at
 FROM "SCBusinessPlanProjections" p
@@ -859,22 +980,24 @@ CROSS JOIN LATERAL (VALUES
     (13, p.jc13_projection1, p.jc13_projection2)
 ) AS x (jc_no, p1, p2)
 LEFT JOIN dim_jc j ON j.acc_year = p.acc_year AND j.jc_no = x.jc_no
+LEFT JOIN dim_plan_product dp ON dp.name_key = lower(trim(p.item_description))
 WHERE coalesce(x.p1, 0) <> 0 OR coalesce(x.p2, 0) <> 0;
 
-COMMENT ON VIEW fact_projection_jc IS 'crm''s rolled-up projection, one row per product name x branch x cycle x type: the approved customer plans (PC) or lead plans (Lead) summed per fortnight. It is what crm hands to oracle for supply. crm computes it from the plans when it publishes, so it matches today''s approved plan for the current cycle and drifts from it on cycles whose plans were edited later. Use fact_plan_jc / fact_lead_plan_jc for the detail and this to see what crm actually published.';
+COMMENT ON VIEW fact_projection_jc IS 'crm''s rolled-up projection, one row per product name x branch x cycle x type: the approved customer plans (PC) or lead plans (Lead) summed per fortnight. It is what crm hands to oracle for supply, written when the cycle is published (the last day of the previous cycle). A cycle''s quantities are final from the week-4 hand-off, so this matches the plan for cycles already published; a later cycle still differs simply because its own entry window has not finished filling. Use fact_plan_jc / fact_lead_plan_jc for the detail and this to see what crm actually published.';
 COMMENT ON COLUMN fact_projection_jc.projection_id IS 'The projection row (SCBusinessPlanProjections.line_id).';
 COMMENT ON COLUMN fact_projection_jc.acc_year IS 'The accounting year.';
 COMMENT ON COLUMN fact_projection_jc.plan_type IS 'PC = from the customer plans, Lead = from the lead plans.';
 COMMENT ON COLUMN fact_projection_jc.jc_no IS 'Cycle number 1 .. 13.';
 COMMENT ON COLUMN fact_projection_jc.jc_id IS 'The cycle. Joins dim_jc.';
 COMMENT ON COLUMN fact_projection_jc.jc_seq IS 'Running cycle number.';
-COMMENT ON COLUMN fact_projection_jc.name_key IS 'The product name, lower case and trimmed. Joins dim_plan_product.';
+COMMENT ON COLUMN fact_projection_jc.name_key IS 'The product name key, resolved to the item master spelling (dim_plan_product.master_name_key). Joins dim_plan_product.';
 COMMENT ON COLUMN fact_projection_jc.product_name IS 'The product name as crm spells it.';
 COMMENT ON COLUMN fact_projection_jc.item_id IS 'The item crm resolved the name to, when it did. Joins dim_item.';
 COMMENT ON COLUMN fact_projection_jc.collector_id IS 'The branch. Joins dim_collector.';
-COMMENT ON COLUMN fact_projection_jc.week1_qty IS 'Projected quantity, first fortnight.';
-COMMENT ON COLUMN fact_projection_jc.week2_qty IS 'Projected quantity, second fortnight.';
-COMMENT ON COLUMN fact_projection_jc.projection_qty IS 'Projected quantity for the cycle = week1 + week2.';
+COMMENT ON COLUMN fact_projection_jc.projection1_qty IS 'crm''s first component. On the current and past cycles it is the first fortnight (weeks 1-2); on future cycles crm puts the whole cycle''s forecast here. has_fortnight_split says which.';
+COMMENT ON COLUMN fact_projection_jc.projection2_qty IS 'crm''s second component: the second fortnight (weeks 3-4) while has_fortnight_split holds, 0 on future cycles.';
+COMMENT ON COLUMN fact_projection_jc.projection_qty IS 'The full-cycle quantity = projection1 + projection2. Split into fortnights only when has_fortnight_split.';
+COMMENT ON COLUMN fact_projection_jc.has_fortnight_split IS 'The two components are fortnights (the cycle has started). On later cycles the whole quantity sits in projection1.';
 COMMENT ON COLUMN fact_projection_jc.projection_created_at IS 'When crm created the projection row.';
 COMMENT ON COLUMN fact_projection_jc.projection_updated_at IS 'When crm last refreshed it.';
 
@@ -991,7 +1114,7 @@ SELECT p.line_id                                        AS lead_product_id,
        p.item_id,
        p.temp_item_id,
        p.temp_item_id IS NOT NULL                       AS is_temp_item,
-       lower(trim(coalesce(i.item_name, p.product_itemname))) AS name_key,
+       coalesce(lower(trim(i.item_name)), dp.master_name_key, lower(trim(p.product_itemname))) AS name_key,
        coalesce(i.item_name, p.product_itemname)        AS product_name,
        p.product_group,
        coalesce(p.quantity, 0)                          AS lead_qty,
@@ -1005,6 +1128,7 @@ SELECT p.line_id                                        AS lead_product_id,
 FROM "LeadProducts" p
 JOIN "LeadDetails" l ON l.lead_id = p.leadid
 LEFT JOIN dim_item i ON i.item_id = p.item_id
+LEFT JOIN dim_plan_product dp ON dp.name_key = lower(trim(p.product_itemname))
 WHERE coalesce(l.leadstatus, 0) NOT IN (7, 8);
 
 COMMENT ON VIEW fact_open_lead IS 'The open lead book: every product on a lead that is neither converted nor closed, with the quantity the lead is expected to bring. crm''s projection report sums lead_qty per product name x branch over these (real items only, not temp items). Temporary-closed leads are kept, flagged by lead_status.';
@@ -1020,13 +1144,13 @@ COMMENT ON COLUMN fact_open_lead.industry IS 'The industry typed on the lead.';
 COMMENT ON COLUMN fact_open_lead.lead_status_id IS 'crm lead status code (1 .. 6, 9 here; 7 converted and 8 closed are excluded).';
 COMMENT ON COLUMN fact_open_lead.lead_status IS 'Prospect / In progress / Temporary Close.';
 COMMENT ON COLUMN fact_open_lead.lead_approve_status IS 'crm lead approval code 0 .. 3; 3 = rejected.';
-COMMENT ON COLUMN fact_open_lead.counts_for_crm IS 'Not rejected - crm''s projection counts it.';
+COMMENT ON COLUMN fact_open_lead.counts_for_crm IS 'Not rejected (approve_status <> 3). crm''s lead PROJECTION applies this filter; its open-lead quantity does not - and v_plan_vs_actual follows the open-lead rule, so it ignores this flag.';
 COMMENT ON COLUMN fact_open_lead.lead_created_at IS 'When the lead was raised.';
 COMMENT ON COLUMN fact_open_lead.lead_age_days IS 'Days since the lead was raised.';
 COMMENT ON COLUMN fact_open_lead.item_id IS 'The product. Joins dim_item. Empty for temp items and unresolved products.';
 COMMENT ON COLUMN fact_open_lead.temp_item_id IS 'The temp item, when the product is not yet in the item master. Joins TempItemmasters.';
 COMMENT ON COLUMN fact_open_lead.is_temp_item IS 'The product is a temp item.';
-COMMENT ON COLUMN fact_open_lead.name_key IS 'The product name, lower case and trimmed. Joins dim_plan_product.';
+COMMENT ON COLUMN fact_open_lead.name_key IS 'The product name key: the item''s name when the product resolved, else the typed name resolved through dim_plan_product. Joins dim_plan_product.';
 COMMENT ON COLUMN fact_open_lead.product_name IS 'The product name (item master spelling when resolved, else as typed on the lead).';
 COMMENT ON COLUMN fact_open_lead.product_group IS 'The product group as typed on the lead.';
 COMMENT ON COLUMN fact_open_lead.lead_qty IS 'The quantity the lead is expected to bring, in the product''s unit. What crm counts as open lead quantity.';
@@ -1037,6 +1161,126 @@ COMMENT ON COLUMN fact_open_lead.annual_potential_qty IS 'The yearly potential q
 COMMENT ON COLUMN fact_open_lead.in_pc_plan IS 'Flagged to be considered in the PC business plan.';
 COMMENT ON COLUMN fact_open_lead.sample_requested IS 'A sample was requested for the product.';
 COMMENT ON COLUMN fact_open_lead.product_added_at IS 'When the product was added to the lead.';
+
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- fact_committed_jc: what is already committed for a cycle - open order balances and confirmed quotes, placed on the
+-- cycle their date falls in. this is the adhoc demand the plan does not carry: sales raise a quote or an order with a
+-- schedule date and the planner has to cover it. a plain view: the open book changes daily and must not go stale.
+-- ---------------------------------------------------------------------------------------------------------------
+DROP VIEW IF EXISTS fact_committed_jc CASCADE;
+
+CREATE VIEW fact_committed_jc AS
+WITH cur AS (
+    SELECT jc_id, jc_seq FROM dim_jc WHERE is_current
+),
+soc AS (
+    SELECT lower(trim(i.item_name)) AS name_key, s.collector_id, s.effective_date AS due_date, s.balance_qty AS qty
+    FROM fact_schedule_line s
+    JOIN dim_item i ON i.item_id = s.item_id
+    WHERE s.is_open AND s.is_demand AND NOT s.has_pending_cancellation
+      -- crm stops counting a bulk line once it is all but delivered
+      AND NOT (lower(trim(s.sale_category)) = 'bulk' AND s.dispatched_qty >= 0.9 * s.scheduled_qty)
+),
+quo AS (
+    SELECT lower(trim(i.item_name)) AS name_key, q.collector_id,
+           coalesce(q.delivery_date, q.quote_date) AS due_date, q.quantity AS qty
+    FROM fact_quote_line q
+    JOIN dim_item i ON i.item_id = q.item_id
+    WHERE q.is_open_pipeline
+),
+lines AS (
+    SELECT 'soc' AS src, name_key, collector_id, due_date, qty FROM soc
+    UNION ALL
+    SELECT 'quote', name_key, collector_id, due_date, qty FROM quo
+),
+placed AS (
+    SELECT l.src, l.name_key, l.collector_id, l.qty, l.due_date,
+           CASE WHEN j.jc_seq IS NULL              THEN 'undated'
+                WHEN j.jc_seq < c.jc_seq           THEN 'overdue'
+                WHEN j.jc_seq <= c.jc_seq + 2      THEN 'in horizon'
+                ELSE 'beyond horizon' END          AS horizon_bucket,
+           CASE WHEN j.jc_seq IS NULL              THEN -1
+                WHEN j.jc_seq < c.jc_seq           THEN c.jc_id
+                WHEN j.jc_seq <= c.jc_seq + 2      THEN j.jc_id
+                ELSE -1 END                        AS jc_id
+    FROM lines l
+    CROSS JOIN cur c
+    LEFT JOIN dim_jc j ON j.jc_id > 0 AND l.due_date BETWEEN j.jc_start AND j.jc_end
+)
+SELECT p.name_key,
+       p.collector_id,
+       p.jc_id,
+       j.jc_seq,
+       j.acc_year,
+       j.jc_no,
+       p.horizon_bucket,
+       coalesce(sum(p.qty) FILTER (WHERE p.src = 'soc'), 0)   AS open_soc_qty,
+       coalesce(sum(p.qty) FILTER (WHERE p.src = 'quote'), 0) AS quote_qty,
+       sum(p.qty)                                             AS committed_qty,
+       count(*) FILTER (WHERE p.src = 'soc')                  AS soc_lines,
+       count(*) FILTER (WHERE p.src = 'quote')                AS quote_lines,
+       min(p.due_date)                                        AS earliest_due_date
+FROM placed p
+LEFT JOIN dim_jc j ON j.jc_id = p.jc_id
+GROUP BY p.name_key, p.collector_id, p.jc_id, j.jc_seq, j.acc_year, j.jc_no, p.horizon_bucket;
+
+COMMENT ON VIEW fact_committed_jc IS 'Demand already committed but not planned - the adhoc side. One row per product name x branch x cycle x horizon bucket: the open order balance and the confirmed-but-unordered quotes, each placed on the cycle its date falls in (an order by its schedule date, a quote by its delivery date). Sales raise these outside the planning window, so the planner sees them here beside the plan. A plain view, not materialized: the open book changes every day and must always be current.';
+COMMENT ON COLUMN fact_committed_jc.name_key IS 'The product name key. Joins dim_plan_product, fact_plan_name_jc.';
+COMMENT ON COLUMN fact_committed_jc.collector_id IS 'The branch. Joins dim_collector.';
+COMMENT ON COLUMN fact_committed_jc.jc_id IS 'The cycle the commitment lands in. Overdue rows carry the current cycle; beyond-horizon and undated rows carry -1.';
+COMMENT ON COLUMN fact_committed_jc.jc_seq IS 'Running cycle number.';
+COMMENT ON COLUMN fact_committed_jc.acc_year IS 'Accounting year of that cycle.';
+COMMENT ON COLUMN fact_committed_jc.jc_no IS 'Cycle number 1 .. 13.';
+COMMENT ON COLUMN fact_committed_jc.horizon_bucket IS 'in horizon = due in the current cycle or the next two, the window the plan covers. overdue = past due and still open, carried on the current cycle - mostly old quotes nobody closed, so read the order and quote parts separately. beyond horizon = due later than the plan reaches. undated = no usable date.';
+COMMENT ON COLUMN fact_committed_jc.open_soc_qty IS 'Open order balance: scheduled minus dispatched on open schedule lines that are customer demand with no pending cancellation, bulk lines dropped once 90 percent delivered (crm''s rule).';
+COMMENT ON COLUMN fact_committed_jc.quote_qty IS 'Quantity on quotes confirmed but not yet turned into an order (fact_quote_line, is_open_pipeline).';
+COMMENT ON COLUMN fact_committed_jc.committed_qty IS 'open_soc_qty + quote_qty - what is already asked for in this cycle.';
+COMMENT ON COLUMN fact_committed_jc.soc_lines IS 'How many open schedule lines are behind the row.';
+COMMENT ON COLUMN fact_committed_jc.quote_lines IS 'How many quote lines are behind the row.';
+COMMENT ON COLUMN fact_committed_jc.earliest_due_date IS 'The earliest date among them.';
+
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- fact_plan_reopen: every time an approved plan was opened again for editing. the exception to "a cycle's plan is
+-- final once the window closes".
+-- ---------------------------------------------------------------------------------------------------------------
+DROP VIEW IF EXISTS fact_plan_reopen CASCADE;
+
+CREATE VIEW fact_plan_reopen AS
+SELECT r.line_id                                       AS reopen_id,
+       r.acc_year,
+       nullif(regexp_replace(r.jc_type, '\D', '', 'g'), '')::int AS jc_no,
+       j.jc_id,
+       j.jc_seq,
+       r.user_id,
+       u.name                                          AS user_name,
+       r.mc_code,
+       m.collector_id,
+       coalesce(r.is_reopen, false)                    AS is_reopen,
+       r.creation_date                                 AS reopened_at,
+       r.creation_date::date                           AS reopened_on,
+       o.jc_id                                         AS reopened_in_jc_id
+FROM "PcBusinessPlanReopens" r
+LEFT JOIN dim_jc j ON j.acc_year = r.acc_year AND j.jc_no = nullif(regexp_replace(r.jc_type, '\D', '', 'g'), '')::int
+LEFT JOIN "Users" u ON u.line_id = r.user_id
+LEFT JOIN "MarketCircles" m ON m.mc_code = r.mc_code
+LEFT JOIN dim_jc o ON o.jc_id > 0 AND r.creation_date::date BETWEEN o.jc_start AND o.jc_end;
+
+COMMENT ON VIEW fact_plan_reopen IS 'Every reopen of an approved business plan: which cycle was opened again, by whom, from which market circle, and when. A cycle''s plan is normally final once its window closes and the projection is published; these are the exceptions, and there are about a hundred a cycle.';
+COMMENT ON COLUMN fact_plan_reopen.reopen_id IS 'The crm row (PcBusinessPlanReopens.line_id).';
+COMMENT ON COLUMN fact_plan_reopen.acc_year IS 'The accounting year of the plan that was reopened.';
+COMMENT ON COLUMN fact_plan_reopen.jc_no IS 'The cycle number that was reopened, from crm''s JC1 .. JC13 text.';
+COMMENT ON COLUMN fact_plan_reopen.jc_id IS 'That cycle. Joins dim_jc.';
+COMMENT ON COLUMN fact_plan_reopen.jc_seq IS 'Running number of that cycle.';
+COMMENT ON COLUMN fact_plan_reopen.user_id IS 'Who reopened it. Joins Users.';
+COMMENT ON COLUMN fact_plan_reopen.user_name IS 'That person''s name.';
+COMMENT ON COLUMN fact_plan_reopen.mc_code IS 'The market circle. Joins dim_market_circle.';
+COMMENT ON COLUMN fact_plan_reopen.collector_id IS 'The branch that circle belongs to. Joins dim_collector.';
+COMMENT ON COLUMN fact_plan_reopen.is_reopen IS 'crm''s own flag on the row.';
+COMMENT ON COLUMN fact_plan_reopen.reopened_at IS 'When it was reopened.';
+COMMENT ON COLUMN fact_plan_reopen.reopened_on IS 'The day it was reopened.';
+COMMENT ON COLUMN fact_plan_reopen.reopened_in_jc_id IS 'The cycle that was running when it was reopened - compare with jc_id to see whether the plan was opened before, during or after its own cycle.';
 
 
 -- ---------------------------------------------------------------------------------------------------------------
@@ -1103,21 +1347,16 @@ warehouse AS (
     WHERE m.enddate IS NULL OR m.enddate >= current_date
     ORDER BY m.collector_id, m.startdate DESC NULLS LAST, m.header_id
 ),
-open_soc AS (
-    SELECT lower(trim(i.item_name)) AS name_key, s.collector_id,
-           sum(s.balance_qty) FILTER (WHERE s.is_demand AND NOT s.has_pending_cancellation) AS open_soc_qty,
-           sum(s.balance_qty)                                                              AS open_soc_qty_crm_rule
-    FROM fact_schedule_line s
-    JOIN dim_item i ON i.item_id = s.item_id
-    WHERE s.is_open
-    GROUP BY 1, 2
-),
-quotes AS (
-    SELECT lower(trim(i.item_name)) AS name_key, q.collector_id, sum(q.quantity) AS confirmed_quote_qty
-    FROM fact_quote_line q
-    JOIN dim_item i ON i.item_id = q.item_id
-    WHERE q.is_open_pipeline
-    GROUP BY 1, 2
+committed AS (
+    SELECT name_key, collector_id, jc_id,
+           sum(open_soc_qty)  FILTER (WHERE horizon_bucket = 'in horizon') AS open_soc_qty,
+           sum(quote_qty)     FILTER (WHERE horizon_bucket = 'in horizon') AS quote_qty,
+           sum(committed_qty) FILTER (WHERE horizon_bucket = 'in horizon') AS committed_qty,
+           sum(open_soc_qty)  FILTER (WHERE horizon_bucket = 'overdue')    AS overdue_soc_qty,
+           sum(quote_qty)     FILTER (WHERE horizon_bucket = 'overdue')    AS overdue_quote_qty
+    FROM fact_committed_jc
+    WHERE jc_id > 0
+    GROUP BY 1, 2, 3
 ),
 leads AS (
     SELECT l.name_key, l.collector_id,
@@ -1154,16 +1393,18 @@ SELECT k.name_key,
        coalesce(k.our_naive_qty, 0)                     AS our_naive_qty,
        round((100 * (coalesce(p.plan_qty, 0) - k.crm_prev4_qty / nullif(k.crm_prev4_nonzero_cycles, 0))
                 / nullif(k.crm_prev4_qty / nullif(k.crm_prev4_nonzero_cycles, 0), 0))::numeric, 1) AS plan_vs_avg_pct,
-       CASE WHEN NOT c.is_completed THEN coalesce(s.open_soc_qty, 0) END          AS open_soc_qty,
-       CASE WHEN NOT c.is_completed THEN coalesce(s.open_soc_qty_crm_rule, 0) END AS open_soc_qty_crm_rule,
-       CASE WHEN NOT c.is_completed THEN coalesce(q.confirmed_quote_qty, 0) END   AS confirmed_quote_qty,
+       coalesce(cm.open_soc_qty, 0)                     AS open_soc_qty,
+       coalesce(cm.quote_qty, 0)                        AS quote_qty,
+       coalesce(cm.committed_qty, 0)                    AS committed_qty,
+       coalesce(cm.overdue_soc_qty, 0)                  AS overdue_soc_qty,
+       coalesce(cm.overdue_quote_qty, 0)                AS overdue_quote_qty,
+       greatest(coalesce(cm.committed_qty, 0) - coalesce(p.plan_qty, 0), 0) AS unplanned_qty,
        CASE WHEN NOT c.is_completed THEN coalesce(l.open_lead_qty, 0) END         AS open_lead_qty,
        CASE WHEN NOT c.is_completed THEN coalesce(l.open_lead_qty_incl_temp, 0) END AS open_lead_qty_incl_temp
 FROM hist k
 JOIN cycles c ON c.jc_seq = k.jc_seq
 LEFT JOIN plan p  ON p.name_key = k.name_key AND p.collector_id = k.collector_id AND p.jc_seq = k.jc_seq
-LEFT JOIN open_soc s ON s.name_key = k.name_key AND s.collector_id = k.collector_id
-LEFT JOIN quotes q   ON q.name_key = k.name_key AND q.collector_id = k.collector_id
+LEFT JOIN committed cm ON cm.name_key = k.name_key AND cm.collector_id = k.collector_id AND cm.jc_id = c.jc_id
 LEFT JOIN leads l    ON l.name_key = k.name_key AND l.collector_id = k.collector_id
 LEFT JOIN warehouse w ON w.collector_id = k.collector_id
 LEFT JOIN dim_plan_product dp ON dp.name_key = k.name_key
@@ -1204,9 +1445,12 @@ COMMENT ON COLUMN v_plan_vs_actual.our_prev4_avg_qty IS 'Our demand averaged ove
 COMMENT ON COLUMN v_plan_vs_actual.our_prev4_avg_nonzero_qty IS 'Our demand averaged over the previous four cycles counting only cycles with demand.';
 COMMENT ON COLUMN v_plan_vs_actual.our_naive_qty IS 'Our demand in the same cycle a year earlier - the naive forecast.';
 COMMENT ON COLUMN v_plan_vs_actual.plan_vs_avg_pct IS 'crm''s "% diff": (plan - crm non-zero average of the previous four cycles) / that average x 100. Empty when there is no average.';
-COMMENT ON COLUMN v_plan_vs_actual.open_soc_qty IS 'Today''s open order balance for the product at the branch: scheduled minus dispatched on open schedule lines that are customer demand and have no pending cancellation. Only on cycles not yet completed (it is a today number, not a cycle number).';
-COMMENT ON COLUMN v_plan_vs_actual.open_soc_qty_crm_rule IS 'The same balance the way crm''s report counts it: every open schedule line, pending cancellations and non-demand kinds included. Always >= open_soc_qty.';
-COMMENT ON COLUMN v_plan_vs_actual.confirmed_quote_qty IS 'Today''s quoted quantity on quotes confirmed but not yet ordered (fact_quote_line, is_open_pipeline). Only on cycles not yet completed.';
+COMMENT ON COLUMN v_plan_vs_actual.open_soc_qty IS 'Open order balance due in THIS cycle (fact_committed_jc): scheduled minus dispatched on open schedule lines that are customer demand with no pending cancellation.';
+COMMENT ON COLUMN v_plan_vs_actual.quote_qty IS 'Quantity on confirmed but unordered quotes whose delivery date falls in this cycle.';
+COMMENT ON COLUMN v_plan_vs_actual.committed_qty IS 'open_soc_qty + quote_qty: demand already asked for in this cycle, whether or not it was planned.';
+COMMENT ON COLUMN v_plan_vs_actual.overdue_soc_qty IS 'Order balance whose schedule date has passed and is still open - real demand that slipped. Carried on the current cycle, so it is zero on every other row.';
+COMMENT ON COLUMN v_plan_vs_actual.overdue_quote_qty IS 'Confirmed quotes whose delivery date has passed and that were never ordered. Mostly quotes nobody closed rather than live demand - read it as a hygiene number, not as a commitment. Carried on the current cycle.';
+COMMENT ON COLUMN v_plan_vs_actual.unplanned_qty IS 'committed_qty minus the approved plan, never below zero: the part of this cycle''s commitments the plan does not cover. The adhoc demand a planner has to find stock for.';
 COMMENT ON COLUMN v_plan_vs_actual.open_lead_qty IS 'Today''s quantity on open leads for real items (fact_open_lead, item resolved) - crm''s rule. Only on cycles not yet completed.';
 COMMENT ON COLUMN v_plan_vs_actual.open_lead_qty_incl_temp IS 'Open lead quantity including temp items and unresolved product names.';
 
@@ -1299,6 +1543,7 @@ wide AS (
 SELECT w.acc_year,
        w.collector_id,
        x.method,
+       x.lead_time_cycles,
        w.rows_all,
        w.rows_with_demand,
        x.rows_with_forecast,
@@ -1312,18 +1557,19 @@ SELECT w.acc_year,
        round((100 * x.err_all / nullif(w.actual_qty, 0))::numeric, 1)          AS bias_pct_all_rows
 FROM wide w
 CROSS JOIN LATERAL (VALUES
-        ('naive', naive_rows_with_forecast, naive_rows_both, naive_forecast_qty, naive_actual_both, naive_abs_err_both, naive_err_both, naive_abs_err_all, naive_err_all),
-        ('avg4', avg4_rows_with_forecast, avg4_rows_both, avg4_forecast_qty, avg4_actual_both, avg4_abs_err_both, avg4_err_both, avg4_abs_err_all, avg4_err_all),
-        ('avg4_nonzero', avg4_nonzero_rows_with_forecast, avg4_nonzero_rows_both, avg4_nonzero_forecast_qty, avg4_nonzero_actual_both, avg4_nonzero_abs_err_both, avg4_nonzero_err_both, avg4_nonzero_abs_err_all, avg4_nonzero_err_all),
-        ('plan', plan_rows_with_forecast, plan_rows_both, plan_forecast_qty, plan_actual_both, plan_abs_err_both, plan_err_both, plan_abs_err_all, plan_err_all),
-        ('forecast_h1', forecast_h1_rows_with_forecast, forecast_h1_rows_both, forecast_h1_forecast_qty, forecast_h1_actual_both, forecast_h1_abs_err_both, forecast_h1_err_both, forecast_h1_abs_err_all, forecast_h1_err_all),
-        ('forecast_h2', forecast_h2_rows_with_forecast, forecast_h2_rows_both, forecast_h2_forecast_qty, forecast_h2_actual_both, forecast_h2_abs_err_both, forecast_h2_err_both, forecast_h2_abs_err_all, forecast_h2_err_all)
-) AS x (method, rows_with_forecast, rows_both, forecast_qty, actual_both, abs_err_both, err_both, abs_err_all, err_all);
+        ('naive', 13, naive_rows_with_forecast, naive_rows_both, naive_forecast_qty, naive_actual_both, naive_abs_err_both, naive_err_both, naive_abs_err_all, naive_err_all),
+        ('avg4', 1, avg4_rows_with_forecast, avg4_rows_both, avg4_forecast_qty, avg4_actual_both, avg4_abs_err_both, avg4_err_both, avg4_abs_err_all, avg4_err_all),
+        ('avg4_nonzero', 1, avg4_nonzero_rows_with_forecast, avg4_nonzero_rows_both, avg4_nonzero_forecast_qty, avg4_nonzero_actual_both, avg4_nonzero_abs_err_both, avg4_nonzero_err_both, avg4_nonzero_abs_err_all, avg4_nonzero_err_all),
+        ('plan', 0.3, plan_rows_with_forecast, plan_rows_both, plan_forecast_qty, plan_actual_both, plan_abs_err_both, plan_err_both, plan_abs_err_all, plan_err_all),
+        ('forecast_h1', 1.3, forecast_h1_rows_with_forecast, forecast_h1_rows_both, forecast_h1_forecast_qty, forecast_h1_actual_both, forecast_h1_abs_err_both, forecast_h1_err_both, forecast_h1_abs_err_all, forecast_h1_err_all),
+        ('forecast_h2', 2.3, forecast_h2_rows_with_forecast, forecast_h2_rows_both, forecast_h2_forecast_qty, forecast_h2_actual_both, forecast_h2_abs_err_both, forecast_h2_err_both, forecast_h2_abs_err_all, forecast_h2_err_all)
+) AS x (method, lead_time_cycles, rows_with_forecast, rows_both, forecast_qty, actual_both, abs_err_both, err_both, abs_err_all, err_all);
 
-COMMENT ON VIEW v_forecast_accuracy IS 'The forecast scoreboard: per accounting year (collector_id empty = all branches) and per branch, one row per method - how much of the customer demand the method covered and how far off it was. Methods: naive (same cycle last year), avg4 and avg4_nonzero (previous four cycles), plan (the approved business plan), forecast_h1 / forecast_h2 (the planner''s forecast made one / two cycles ahead). Actual = our customer demand at product name x branch x cycle grain, completed cycles from 2022-23. Two conventions: "where both exist" (rows with demand and a forecast; read with coverage_pct) and "all rows" (misses and phantom forecasts count in full). Lower WAPE is better; bias > 0 means over-forecast.';
+COMMENT ON VIEW v_forecast_accuracy IS 'The forecast scoreboard: per accounting year (collector_id empty = all branches) and per branch, one row per method - how much of the customer demand the method covered and how far off it was. Methods: naive (same cycle last year), avg4 and avg4_nonzero (previous four cycles), plan (the approved business plan), forecast_h1 / forecast_h2 (the planner''s forecast labelled one / two cycles ahead - entered one cycle before the label, so h1 is really a two-cycle-ahead forecast and works with older information than avg4). Actual = our customer demand at product name x branch x cycle grain, completed cycles from 2022-23. Two conventions: "where both exist" (rows with demand and a forecast; read with coverage_pct) and "all rows" (misses and phantom forecasts count in full). Lower WAPE is better; bias > 0 means over-forecast. lead_time_cycles says how far ahead each method had to commit, so the comparison is fair.';
 COMMENT ON COLUMN v_forecast_accuracy.acc_year IS 'The accounting year scored.';
 COMMENT ON COLUMN v_forecast_accuracy.collector_id IS 'The branch, or empty for all branches together. Joins dim_collector.';
 COMMENT ON COLUMN v_forecast_accuracy.method IS 'naive / avg4 / avg4_nonzero / plan / forecast_h1 / forecast_h2.';
+COMMENT ON COLUMN v_forecast_accuracy.lead_time_cycles IS 'How far ahead of the cycle the method has to commit, in cycles - how old its information is. naive 13 (the same cycle a year back), avg4 and avg4_nonzero 1 (the previous cycle), plan about 0.3 (entered in weeks 2-3 of the cycle before and handed over in week 4), forecast_h1 about 1.3 and forecast_h2 about 2.3. Compare two methods only with this in mind: the one that speaks later has the easier job.';
 COMMENT ON COLUMN v_forecast_accuracy.rows_all IS 'Product name x branch x cycle rows scored (every pair with demand history or a plan).';
 COMMENT ON COLUMN v_forecast_accuracy.rows_with_demand IS 'Rows with demand in the cycle.';
 COMMENT ON COLUMN v_forecast_accuracy.rows_with_forecast IS 'Rows where the method gave a number above zero.';

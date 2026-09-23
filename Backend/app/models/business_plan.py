@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, Integer, Text, Boolean, Double, Numeric, Date, DateTime, ForeignKey
+from sqlalchemy import func, Column, BigInteger, Integer, Text, Boolean, Double, Numeric, Date, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
@@ -38,6 +38,26 @@ class JourneyCalendars(Base):
 
 
 
+class JcWeeklyCalendars(Base):
+    """the four weeks of every journey cycle. crm runs the planning windows on these weeks: a cycle's plan is
+    entered during weeks 2 and 3 of the previous cycle, handed to the planners on the first day of week 4 and
+    pushed to oracle on the cycle's last day. weeks run sunday to saturday; the first week of JC1 and the last
+    of JC13 are short or long so the year fits."""
+
+    __tablename__ = "JcWeeklyCalendars"
+
+    line_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    jcno = Column(Integer, nullable=False, index=True)                       # the cycle number 1 .. 13 (not the calendar id)
+    weekno = Column(Integer, nullable=False)                                 # 1 .. 4
+    week_period_from = Column(Date, nullable=False)
+    week_period_to = Column(Date, nullable=False)
+    acc_yr = Column(Text, nullable=False, index=True)                        # 2026-2027, matches JourneyCalendars.acc_year
+    created_by = Column(BigInteger)
+    creation_date = Column(DateTime)
+    last_updated_by = Column(BigInteger)
+    last_update_date = Column(DateTime)
+
+
 class SCBusinessMonthlyPlanHdrs(Base):
 
     __tablename__ = "SCBusinessMonthlyPlanHdrs"
@@ -60,7 +80,7 @@ class SCBusinessMonthlyPlanHdrs(Base):
     prev_two_yr_value_achieved = Column(Double, nullable=False)
     last_yr_avg_sell_price = Column(Double, nullable=False)
     avg_sell_price = Column(Double, nullable=False)
-    jc1_status = Column(Integer, nullable=False)                             # 1 .. 6, no master in crm. 1 and 4 cover 96%
+    jc1_status = Column(Integer, nullable=False)                             # 1 .. 6, no master in crm. 4 = approved up to 2024-25, 5 from 2025-26 (4 = waiting)
     jc2_status = Column(Integer, nullable=False)
     jc3_status = Column(Integer, nullable=False)
     jc4_status = Column(Integer, nullable=False)
@@ -327,6 +347,32 @@ class SCBusinessPlanProjections(Base):
     jc11_projection2 = Column(Double)
     jc12_projection2 = Column(Double)
     jc13_projection2 = Column(Double)
+    jc1_previous_projection1 = Column(Double)
+    jc2_previous_projection1 = Column(Double)
+    jc3_previous_projection1 = Column(Double)
+    jc4_previous_projection1 = Column(Double)
+    jc5_previous_projection1 = Column(Double)
+    jc6_previous_projection1 = Column(Double)
+    jc7_previous_projection1 = Column(Double)
+    jc8_previous_projection1 = Column(Double)
+    jc9_previous_projection1 = Column(Double)
+    jc10_previous_projection1 = Column(Double)
+    jc11_previous_projection1 = Column(Double)
+    jc12_previous_projection1 = Column(Double)
+    jc13_previous_projection1 = Column(Double)
+    jc1_previous_projection2 = Column(Double)
+    jc2_previous_projection2 = Column(Double)
+    jc3_previous_projection2 = Column(Double)
+    jc4_previous_projection2 = Column(Double)
+    jc5_previous_projection2 = Column(Double)
+    jc6_previous_projection2 = Column(Double)
+    jc7_previous_projection2 = Column(Double)
+    jc8_previous_projection2 = Column(Double)
+    jc9_previous_projection2 = Column(Double)
+    jc10_previous_projection2 = Column(Double)
+    jc11_previous_projection2 = Column(Double)
+    jc12_previous_projection2 = Column(Double)
+    jc13_previous_projection2 = Column(Double)
     creation_date = Column(DateTime)
     last_update_date = Column(DateTime)
 
@@ -352,7 +398,8 @@ class FinancialYears(Base):
 
 class TempItemmasters(Base):
     """products planned or quoted before they exist in the item master. a few later became real items
-    (org_item_master_id). nothing loaded points at them today (is_temp_item is 0 on every lead plan row)."""
+    (org_item_master_id). LeadProducts points at them (productid TEMPnnn -> temp_item_id); the lead plan
+    (SCLeadTargets) does not today (is_temp_item is 0 on every row)."""
 
     __tablename__ = "TempItemmasters"
 
@@ -552,4 +599,150 @@ class LeadProducts(Base):
     last_update_date = Column(DateTime)
 
     lead = relationship("LeadDetails", back_populates="products")
+    item = relationship("ItemMasters")
+
+
+class PcBusinessPlanReopens(Base):
+    """every reopen of an approved customer plan: which user, which market circle, which cycle, when. one row per
+    event. crm keeps only today's plan; this log says how often and when a cycle was opened again for editing."""
+
+    __tablename__ = "PcBusinessPlanReopens"
+
+    line_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    acc_year = Column(Text, nullable=False, index=True)
+    user_id = Column(BigInteger, ForeignKey("Users.line_id"), index=True)             # who reopened, 100% match
+    mc_code = Column(Text, ForeignKey("MarketCircles.mc_code"), index=True)            # the circle, lower / trim, 'unknown' when no match
+    jc_type = Column(Text, nullable=False)                                              # the cycle as text: JC1 .. JC13 (not the calendar id)
+    is_reopen = Column(Boolean)
+    created_by = Column(BigInteger)
+    creation_date = Column(DateTime, index=True)                                        # when
+    last_updated_by = Column(BigInteger)
+    last_update_date = Column(DateTime)
+
+    user = relationship("Users")
+    market_circle = relationship("MarketCircles")
+
+
+class SCBusinessPlanLogs(Base):
+    """field-level edit log of the customer plan: the old and new fortnight quantities, price and next-cycle
+    forecasts per plan header x cycle. sparse - only some edit paths in crm write it (mid 2025 on)."""
+
+    __tablename__ = "SCBusinessPlanLogs"
+
+    line_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    header_id = Column(BigInteger, ForeignKey("SCBusinessMonthlyPlanHdrs.header_id"), index=True)   # the plan header, 100% match
+    type_id = Column(Integer)                                                           # 1 / 2, no master
+    jc_type = Column(Text)                                                              # the cycle as text: JC1 .. JC13
+    old_user_dfn_avg_sell_price = Column(Double)
+    old_week1_user_dfn_qty = Column(Double)
+    old_week2_user_dfn_qty = Column(Double)
+    old_nextmonth1_qty = Column(Double)
+    old_nextmonth2_qty = Column(Double)
+    old_updated_by = Column(BigInteger)
+    new_user_dfn_avg_sell_price = Column(Double)
+    new_week1_user_dfn_qty = Column(Double)
+    new_week2_user_dfn_qty = Column(Double)
+    new_nextmonth1_qty = Column(Double)
+    new_nextmonth2_qty = Column(Double)
+    remarks = Column(Text)
+    is_te_edited = Column(Boolean)                                                      # edited by the territory executive
+    is_bh_edited = Column(Boolean)                                                      # edited by the business head
+    mail_flag = Column(Text)
+    mail_sent_date = Column(DateTime)
+    created_by = Column(BigInteger)
+    creation_date = Column(DateTime, index=True)                                        # when the edit happened
+    last_updated_by = Column(BigInteger)
+    last_update_date = Column(DateTime)
+    old_user_dfn_qty = Column(BigInteger)
+    new_user_dfn_qty = Column(BigInteger)
+
+    plan_header = relationship("SCBusinessMonthlyPlanHdrs")
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# our own tables (not mirrored from crm): the plan's history and the name aliases. never truncated by the etl.
+# ---------------------------------------------------------------------------------------------------------------
+
+class PlanSnapshot(Base):
+    """the customer plan as it stood on a date: one row per snapshot date x plan header x cycle that had a
+    quantity. crm keeps only today's plan, so this is how "what did the plan say before the cycle ran" is
+    answered. backfilled once from the dated copies crm holds (SCBusinessMonthlyPlanDtls_* with the Hdrs copy of
+    the same day for the status), then appended by the etl at the two moments that matter for a cycle: the hand-off,
+    when the approved plan goes to the planners, and the publish, when it goes to oracle (app/repositories/plan_history.py)."""
+
+    __tablename__ = "plan_snapshot"
+
+    snapshot_date = Column(Date, primary_key=True)
+    plan_id = Column(BigInteger, primary_key=True)                                      # the plan header. no fk: crm deletes headers
+    jc_no = Column(Integer, primary_key=True)
+    snapshot_source = Column(Text, nullable=False)                                      # 'etl', or the crm copy the quantities came from
+    snapshot_reason = Column(Text)                                                      # handoff / publish / cycle / crm copy - why this snapshot exists
+    snapshot_jc_id = Column(BigInteger, index=True)                                     # the cycle running on the snapshot date
+    target_jc_id = Column(BigInteger, index=True)                                       # the cycle the handoff / publish belongs to
+    acc_year = Column(Text, nullable=False, index=True)
+    customer_id = Column(BigInteger)
+    collector_id = Column(BigInteger)
+    name_key = Column(Text, index=True)                                                 # the product name key, resolved like the views
+    product_name = Column(Text)
+    week1_qty = Column(Double)
+    week2_qty = Column(Double)
+    plan_qty = Column(Double, nullable=False)
+    avg_sell_price = Column(Double)
+    status = Column(Integer)                                                            # the workflow code on the status date
+    is_approved = Column(Boolean)
+    status_source = Column(Text)                                                        # where the status came from when copied on another day
+    status_date = Column(Date)
+    taken_at = Column(DateTime, server_default=func.now())
+
+
+class ProjectionSnapshot(Base):
+    """the published projection as it stood on a date: one row per snapshot date x product name x branch x cycle
+    x type. the plan's own history is in plan_snapshot; this is what crm actually handed to oracle, which is the
+    number supply worked from."""
+
+    __tablename__ = "projection_snapshot"
+
+    snapshot_date = Column(Date, primary_key=True)
+    name_key = Column(Text, primary_key=True)
+    collector_id = Column(BigInteger, primary_key=True)
+    jc_no = Column(Integer, primary_key=True)
+    plan_type = Column(Text, primary_key=True)                                          # PC / Lead
+    snapshot_source = Column(Text, nullable=False)                                      # 'etl', or the crm copy
+    snapshot_reason = Column(Text)                                                      # handoff / publish / crm copy
+    target_jc_id = Column(BigInteger, index=True)
+    acc_year = Column(Text, nullable=False, index=True)
+    projection1_qty = Column(Double)
+    projection2_qty = Column(Double)
+    projection_qty = Column(Double, nullable=False)
+    taken_at = Column(DateTime, server_default=func.now())
+
+
+class PlanApprovalHistory(Base):
+    """when a plan header x cycle was first seen submitted and first seen approved, from the dated header copies
+    crm holds (monthly since mid 2022) and the etl's snapshots since. one row per plan header x cycle that was
+    ever submitted. the copies bracket the dates, so first_seen_* is "by this date", not the exact day."""
+
+    __tablename__ = "plan_approval_history"
+
+    plan_id = Column(BigInteger, primary_key=True)
+    jc_no = Column(Integer, primary_key=True)
+    acc_year = Column(Text, nullable=False, index=True)
+    first_seen_submitted = Column(Date)                                                 # earliest copy with a status other than 1
+    first_seen_approved = Column(Date)                                                  # earliest copy with the approved status (era rule)
+    last_status = Column(Integer)
+    last_seen = Column(Date, nullable=False)
+    copies_seen = Column(Integer, nullable=False)
+
+
+class PlanNameAlias(Base):
+    """plan spellings that are not in the item master, mapped by hand to the item they mean (e.g. 'LG BW 400 R'
+    -> item 'BW 400 R'). dim_plan_product applies these before its own spelling match. kept in pgadmin."""
+
+    __tablename__ = "plan_name_alias"
+
+    name_key = Column(Text, primary_key=True)                                           # the plan spelling, lower case and trimmed
+    item_id = Column(BigInteger, ForeignKey("ItemMasters.item_id"), nullable=False)      # the item it means
+    note = Column(Text)
+    created_at = Column(DateTime, server_default=func.now())
+
     item = relationship("ItemMasters")

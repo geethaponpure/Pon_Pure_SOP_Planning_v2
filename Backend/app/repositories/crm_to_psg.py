@@ -9,6 +9,7 @@ from app.schemas.tables_schemas import TABLES_COLUMNS
 from app.core.constants import CRM_TABLES
 from app.core.config import settings
 from app.repositories.views import refresh_materialized_views
+from app.repositories.plan_history import snapshot_plan
 from app.repositories.utils import (SOURCE_FILTERS, SEED_ROWS, STAGE_FIXES, LOAD_LEVELS,
                                    SNAPSHOT_TABLES, UPSERT_TABLES, PARENT_CHECK,
                                    LARGE_TABLES, RANGE_ROWS, INNER_WORKERS, DERIVED_COLUMNS)
@@ -500,6 +501,8 @@ def export_table_from_sql_to_psg(workers=6):
     pg, pg_cur = get_postgres_cursor()
     try:
         refresh_materialized_views(pg_cur)
+        pg.commit()
+        snapshot_plan(pg_cur)          # the plan's as-of history: once per cycle, plus the approval dates
         pg.commit()
     finally:
         pg.close()

@@ -11,7 +11,7 @@ Two kinds:
 
 Built views are documented in `views_applied.md` (what each view is, columns, rules, diagrams). This file is only the to-do list.
 
-Status: item_master, customer_master, sales_order_soc, dispatch_master, quotation_master, business_plan (both parts) done - see views_applied.md. Next: purchase_master, then inventory_master and user_and_scope.
+Status: item_master, customer_master, sales_order_soc, dispatch_master, quotation_master, business_plan done - both parts, the planning-window calendar, the committed (adhoc) book, the plan's history tables and name resolution; see views_applied.md. Next: purchase_master (with BiGrnDetails for observed supplier lead times), then inventory_master and user_and_scope.
 
 ## customer_master - built, see `views_applied.md`
 
@@ -31,7 +31,7 @@ Status: item_master, customer_master, sales_order_soc, dispatch_master, quotatio
 | SCBusinessMonthlyPlanDtls | **unpivot** to `plan_jc`: one row per plan line × JC (13 × 7 columns → long). Columns: jc, week1_qty, week2_qty, achieved, avg_price, saved | crm stores it wide, every query wants it long |
 | SCBusinessMonthlyPlanDtls | **drop empty plans**: 86% of lines have all 26 week quantities at 0 (crm creates a row for every header). Filter `week1_qty + week2_qty > 0` | valid rows, just uninteresting; "customers with a header but no plan" may be a metric |
 | SCBusinessMonthlyPlanDtls | **value = qty × `jcN_user_dfn_avg_sell_price`**. The `jcN_weekN_user_dfn_value` columns are user typed in mixed units (12,554 rows in lakhs, 16 in rupees, 947 other) - never read them | no rule identifies the unit per row |
-| SCBusinessMonthlyPlanJCDtls | dedupe (72 duplicate header/jc pairs, take latest); drop the 87% all-zero rows; forecast for JC n = row where `jc_type` = that cycle | |
+| SCBusinessMonthlyPlanJCDtls | dedupe (duplicate header/jc pairs, fold by max); drop the all-zero rows; the row labelled `jc_type` = JC n was typed in JC n-1 and forecasts n+1 and n+2 | |
 | SCBusinessMonthlyPlanJCDtls | `header_id` is the plan LINE (`Dtls.line_id`), name it `plan_line_id` in the view | misnamed in crm, kept as is in the mirror |
 | SCBusinessMonthlyPlanHdrs | **plan vs actual needs a product name rule**: the plan has no `item_id`, only `item_description` + `category_id`. Maps to one sku 29%, several 58% (pack sizes), none 13%. Aggregate dispatch by product name, or build a name → item mapping table | |
 | SCBusinessMonthlyPlanHdrs | prospects: `customer_id = -1` with `new_customer_name` / `new_customer_marketcircle`; a `dim_plan_customer` that unions real customers and prospects | |

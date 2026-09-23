@@ -6,9 +6,11 @@ from .models.items_master import ItemCategories, ItemMasters, PurchaseRequisitio
 from .models.sales_order_soc import SaleOrderHdrs, SaleOrderDtls, SocPendingDetails
 from .models.dispatch_master import DeliveryFroms, Reasons, Dispatches, DispatchDetails, Schedules, SocCancelDetails
 from .models.quotation_master import QuotationStatus, QuotationHdrs, QuotationDtls
-from .models.business_plan import (JourneyCalendars, SCBusinessMonthlyPlanHdrs, SCBusinessMonthlyPlanDtls, SCBusinessMonthlyPlanJCDtls,
+from .models.business_plan import (JourneyCalendars, JcWeeklyCalendars, SCBusinessMonthlyPlanHdrs, SCBusinessMonthlyPlanDtls, SCBusinessMonthlyPlanJCDtls,
                                    SPBusinessPlanActualSales, SCBusinessPlanProjections,
-                                   FinancialYears, TempItemmasters, SCLeadTargets, SCLeadTargetJcDtls, LeadDetails, LeadProducts)
+                                   FinancialYears, TempItemmasters, SCLeadTargets, SCLeadTargetJcDtls, LeadDetails, LeadProducts,
+                                   PcBusinessPlanReopens, SCBusinessPlanLogs, PlanSnapshot, ProjectionSnapshot,
+                                   PlanApprovalHistory, PlanNameAlias)
 from .models.purchase_master import ApSuppliers, BiPoDetails, PurchaseRequisitionHdrs, PurchaseRequisitionDtls
 from .models.inventory_master import BiStockDetail, InventoryOrgs, ItemInventoryOrgMappings, BiCollectorInventoryOrgMapping
 from .models.user_and_scope import (Users, Roles, UserRoles, UserMarketCircleMappings, UserCollectorMappings,
