@@ -76,12 +76,15 @@ SELECT s.vendor_id                                     AS supplier_id,
        s.start_date_active::date                       AS active_from,
        s.end_date_active::date                         AS active_to,
        s.end_date_active IS NULL                       AS is_active,
-       upper(btrim(s.attribute8)) = 'YES'              AS is_msme,
+       coalesce(upper(btrim(s.attribute8)) = 'YES', false) AS is_msme,
        nullif(btrim(s.attribute9), '')                 AS msme_class,
        nullif(btrim(s.attribute10), '')                AS msme_type,
        nullif(btrim(s.attribute11), '')                AS udyam_number,
        -- group companies: an order to one of these is an inter-company move, not a third party purchase
-       upper(s.vendor_name) LIKE 'PON PURE%'
+       -- crm's own SupplierTypes maps "GROUP COMPANY" to the oracle type GPO, so the type is the
+       -- declared marker; the name patterns catch the ones booked under an ordinary vendor type.
+       s.vendor_type_lookup_code LIKE '%GPO%'
+         OR upper(s.vendor_name) LIKE 'PON PURE%'
          OR upper(s.vendor_name) LIKE 'PURE CHEMICAL%'
          OR upper(s.vendor_name) LIKE 'PURE ORGANIC%'
          OR upper(s.vendor_name) LIKE 'ALTRA PURE%'
@@ -90,17 +93,17 @@ SELECT s.vendor_id                                     AS supplier_id,
 FROM "ApSuppliers" s
 LEFT JOIN bought b ON b.vendor_id = s.vendor_id;
 
-COMMENT ON VIEW dim_supplier IS 'The oracle vendor master. Only about one row in eight is a company that sells us goods - the rest are employees, transporters, service providers and tax authorities. Use is_goods_supplier before counting suppliers, and is_group_company to separate genuine third party purchases from inter-company movements.';
+COMMENT ON VIEW dim_supplier IS 'The oracle vendor master. Only about one row in four is a company that sells us goods - the rest are employees, transporters, service providers and tax authorities. Use is_goods_supplier before counting suppliers, and is_group_company to separate genuine third party purchases from inter-company movements.';
 COMMENT ON COLUMN dim_supplier.supplier_id IS 'ApSuppliers.vendor_id. fact_po_line and fact_goods_receipt point here.';
 COMMENT ON COLUMN dim_supplier.supplier_number IS 'The oracle vendor number, which is what BiPoDetails carries as vendor_number.';
-COMMENT ON COLUMN dim_supplier.supplier_type IS 'Crm''s raw vendor type, 24 values. VENDOR / VENDOR-DOMESTIC / SUPPLY / PACKING are the ones that sell us goods.';
+COMMENT ON COLUMN dim_supplier.supplier_type IS 'Crm''s raw vendor type, 24 values. Seven of them sell us goods: VENDOR, VENDOR-DOMESTIC, VENDOR-INTERNATIONAL, VENDOR-GPO, VENDOR-GPO-INTERNATIONAL, SUPPLY and PACKING. Null on a few dozen rows.';
 COMMENT ON COLUMN dim_supplier.is_goods_supplier IS 'True where the vendor type is one that supplies goods, or where the vendor has actually raised a purchase order. Both halves are needed: crm books some import vendors under the catch-all type OTHERS, and most rows with that type never bought anything.';
 COMMENT ON COLUMN dim_supplier.has_purchase_history IS 'True where at least one purchase order line exists. A supplier we could buy from is not the same as one we have bought from.';
 COMMENT ON COLUMN dim_supplier.po_lines IS 'How many order lines this supplier has ever had. Zero for most of the master.';
 COMMENT ON COLUMN dim_supplier.is_active IS 'False once oracle sets an end date. About a quarter are inactive; their history still matters.';
-COMMENT ON COLUMN dim_supplier.is_msme IS 'Registered micro, small or medium enterprise - they carry statutory payment deadlines.';
-COMMENT ON COLUMN dim_supplier.is_group_company IS 'True for our own group entities. Purchases from these are inter-company, so exclude them when measuring third party supplier performance.';
-COMMENT ON COLUMN dim_supplier.payment_term_id IS 'Payment terms id, the same 10xxx id space as the requisition''s payment_term_id and lastpotermid. There is no master for it in crm - its own PaymentTerms table uses a different id space entirely and matches none of these - so the id cannot be resolved to a name here. Where the term matters, read it off the requisition, which carries the name.';
+COMMENT ON COLUMN dim_supplier.is_msme IS 'Registered micro, small or medium enterprise - they carry statutory payment deadlines. Crm leaves the field empty on most of the master, and empty is read as not registered rather than unknown.';
+COMMENT ON COLUMN dim_supplier.is_group_company IS 'True for our own group entities - either the declared oracle type (GPO, which crm maps to "GROUP COMPANY") or a group name. Purchases from these are inter-company, so exclude them when measuring third party supplier performance.';
+COMMENT ON COLUMN dim_supplier.payment_term_id IS 'Payment terms id. Resolves in full against ApTermsTls, crm''s mirror of the oracle terms master, which also covers the supplier site, the requisition header and lastpotermid. Do not reach for crm''s dbo.PaymentTerms: that is the customer receivables master on a different id space and matches none of these.';
 
 
 -- ---------------------------------------------------------------------------------------------------------------
@@ -117,8 +120,13 @@ SELECT v.vendor_site_id                                AS supplier_site_id,
        v.city,
        v.state,
        v.zip,
-       v.country                                       AS country_code,
-       CASE upper(btrim(v.country))
+       upper(btrim(v.country))                         AS country_code_raw,
+       -- two codes are wrong at source and would otherwise split a country in two: every KP site is a
+       -- south korean firm and every AS site is american. fold them, and keep the raw code beside it.
+       CASE upper(btrim(v.country)) WHEN 'KP' THEN 'KR' WHEN 'AS' THEN 'US'
+            ELSE nullif(upper(btrim(v.country)), '') END AS country_code,
+       CASE CASE upper(btrim(v.country)) WHEN 'KP' THEN 'KR' WHEN 'AS' THEN 'US'
+                 ELSE upper(btrim(v.country)) END
            WHEN 'IN' THEN 'India'        WHEN 'CN' THEN 'China'         WHEN 'SG' THEN 'Singapore'
            WHEN 'KR' THEN 'Korea'        WHEN 'MY' THEN 'Malaysia'      WHEN 'TW' THEN 'Taiwan'
            WHEN 'TH' THEN 'Thailand'     WHEN 'US' THEN 'United States' WHEN 'DE' THEN 'Germany'
@@ -128,7 +136,10 @@ SELECT v.vendor_site_id                                AS supplier_site_id,
            WHEN 'FR' THEN 'France'       WHEN 'AE' THEN 'United Arab Emirates'
            WHEN 'ID' THEN 'Indonesia'    WHEN 'VN' THEN 'Vietnam'       WHEN 'SA' THEN 'Saudi Arabia'
            WHEN 'RU' THEN 'Russia'       WHEN 'BR' THEN 'Brazil'        WHEN 'LK' THEN 'Sri Lanka'
-           ELSE nullif(btrim(v.country), '')
+           WHEN 'PK' THEN 'Pakistan'     WHEN 'OM' THEN 'Oman'          WHEN 'BD' THEN 'Bangladesh'
+           WHEN 'AU' THEN 'Australia'    WHEN 'CA' THEN 'Canada'        WHEN 'IL' THEN 'Israel'
+           WHEN 'IE' THEN 'Ireland'
+           ELSE nullif(upper(btrim(v.country)), '')
        END                                             AS country,
        coalesce(upper(btrim(v.country)) = 'IN', false) AS is_domestic,
        nullif(v.country_of_origin_code, '')            AS country_of_origin_code,
@@ -143,7 +154,9 @@ FROM "ApSupplierSitesAlls" v;
 
 COMMENT ON VIEW dim_supplier_site IS 'One row per supplier address. A supplier can have several - a factory, a sales office, a pay-to address - and every purchase order line names one. This is where the country lives, and country explains import lead times far better than the procurement type does: an order from Spain and an order from the United States are both "import" and are weeks apart.';
 COMMENT ON COLUMN dim_supplier_site.supplier_site_id IS 'ApSupplierSitesAlls.vendor_site_id. fact_po_line points here, and every line resolves.';
-COMMENT ON COLUMN dim_supplier_site.country IS 'The country spelled out, from the two letter code. Unmapped codes fall through as the code itself.';
+COMMENT ON COLUMN dim_supplier_site.country IS 'The country spelled out. Unmapped codes fall through as the code itself.';
+COMMENT ON COLUMN dim_supplier_site.country_code IS 'The two letter code, with two source errors folded: every site coded KP is a South Korean firm and every site coded AS is American. Grouping on this rather than the raw code keeps those suppliers with their own country.';
+COMMENT ON COLUMN dim_supplier_site.country_code_raw IS 'Exactly what oracle holds, before the KP and AS corrections. Keep for tracing back to the source record.';
 COMMENT ON COLUMN dim_supplier_site.country_of_origin_code IS 'Where the goods are actually made, when oracle records it as different from the address.';
 COMMENT ON COLUMN dim_supplier_site.is_purchasing_site IS 'Orders can be placed on this address. A supplier''s other sites may be pay-to or remit-to only.';
 
@@ -232,7 +245,7 @@ COMMENT ON COLUMN fact_po_line.po_date IS 'When the order was placed. The start 
 COMMENT ON COLUMN fact_po_line.supplier_country_code IS 'Where the supplier site is, as a two letter code. Every line resolves. This is the single best predictor of an import lead time - see dim_item_lead_time.';
 COMMENT ON COLUMN fact_po_line.procurement_type IS 'Normalised to domestic / import / market / packing / other. Crm spells Domestic Procurement three different ways; procurement_type_raw keeps the original.';
 COMMENT ON COLUMN fact_po_line.pending_qty IS 'Still on the water: ordered minus receipts across all copies of the line minus cancelled, floored at zero, and carried only on the primary copy. Working it out per row instead would invent pending on the warehouse a redirected shipment never reached.';
-COMMENT ON COLUMN fact_po_line.is_over_received IS 'True where more arrived than was ordered. Happens on about one line in twelve and is usually a bulk tolerance, not an error.';
+COMMENT ON COLUMN fact_po_line.is_over_received IS 'True where more arrived than was ordered - about one line in 480, usually a bulk tolerance rather than an error.';
 COMMENT ON COLUMN fact_po_line.is_closed IS 'Nothing left to come: received covers the order net of cancellation.';
 COMMENT ON COLUMN fact_po_line.ordered_value IS 'Quantity times unit price. Prefer this to line_amount, which crm does not always fill.';
 
@@ -319,20 +332,27 @@ SELECT d.line_id                                       AS requisition_line_id,
        h.purchase_category,
        h.business,
        h.currency,
-       h.payment_term_id,
-       h.payment_term,
-       -- crm has no master for these term ids, but the names are regular enough to read:
-       -- "45 days (Term date + 45)", "60 Days from BL / Shipment Date", "100% Advance", "Immediate"
-       CASE
-           WHEN h.payment_term ~* '^\s*[0-9]+\s*days'
-               THEN (substring(h.payment_term from '^\s*([0-9]+)\s*[Dd]ays'))::int
-           WHEN h.payment_term ~* 'advance|immedi' THEN 0
-       END                                             AS payment_due_days,
-       CASE
-           WHEN h.payment_term ~* 'advance'        THEN 'advance'
-           WHEN h.payment_term ~* 'bl|shipment'    THEN 'from shipment'
-           WHEN h.payment_term ~* 'immedi'         THEN 'immediate'
-           WHEN h.payment_term ~* 'term date'      THEN 'from term date'
+       nullif(h.payment_term_id, 0)                    AS payment_term_id,
+       coalesce(pt.name, h.payment_term)               AS payment_term,
+       pt.due_days                                     AS payment_due_days,
+       -- what the days are counted from, per oracle's own term group code
+       CASE pt.attribute1
+           WHEN '1'  THEN 'from term date'
+           WHEN '2'  THEN 'from shipment'
+           WHEN '3'  THEN 'from shipment (documents against acceptance)'
+           WHEN '4'  THEN 'post dated cheque'
+           WHEN '6'  THEN 'from shipment (standby letter of credit)'
+           WHEN '7'  THEN 'from shipment (letter of credit)'
+           WHEN '8'  THEN 'immediate'
+           WHEN '9'  THEN 'part advance'
+           WHEN '10' THEN 'cash against documents'
+           ELSE CASE
+               WHEN pt.name ~* 'advance'      THEN 'advance'
+               WHEN pt.name ~* 'bl|shipment'  THEN 'from shipment'
+               WHEN pt.name ~* 'immedi|cash'  THEN 'immediate'
+               WHEN pt.name ~* 'pdc'          THEN 'post dated cheque'
+               WHEN pt.name ~* 'term date'    THEN 'from term date'
+           END
        END                                             AS payment_basis,
        d.item_id,
        d.item_description                              AS item_name,
@@ -368,8 +388,11 @@ SELECT d.line_id                                       AS requisition_line_id,
        d.stock_days > 3650                             AS stock_days_is_meaningless,
        d.lastpoprice                                   AS last_po_price,
        nullif(d.lastpotermid, 0)                       AS last_po_payment_term_id,
-       nullif(d.lastpotermid, 0) IS DISTINCT FROM h.payment_term_id
-                                                       AS payment_term_changed,
+       lt.name                                         AS last_po_payment_term,
+       lt.due_days                                     AS last_po_payment_due_days,
+       -- null, not true, where there is nothing to compare with: crm writes 0 when the item has no prior order
+       CASE WHEN nullif(d.lastpotermid, 0) IS NULL OR nullif(h.payment_term_id, 0) IS NULL THEN NULL
+            ELSE d.lastpotermid <> h.payment_term_id END AS payment_term_changed,
        d.change_in_price_per                           AS price_change_pct,
        d.last3jc_qty                                   AS last_3_cycle_qty,
        d.last6jc_qty                                   AS last_6_cycle_qty,
@@ -384,7 +407,9 @@ SELECT d.line_id                                       AS requisition_line_id,
 FROM "PurchaseRequisitionDtls" d
 JOIN "PurchaseRequisitionHdrs" h ON h.header_id = d.header_id
 LEFT JOIN "ApprovalStatus" a  ON a.header_id = d.status_id
-LEFT JOIN "ApprovalStatus" ah ON ah.header_id = h.status_id;
+LEFT JOIN "ApprovalStatus" ah ON ah.header_id = h.status_id
+LEFT JOIN "ApTermsTls" pt     ON pt.term_id = nullif(h.payment_term_id, 0)
+LEFT JOIN "ApTermsTls" lt     ON lt.term_id = nullif(d.lastpotermid, 0);
 
 COMMENT ON VIEW fact_requisition_line IS 'One row per item on a purchase requisition raised in crm, about 4,500 a year since 2020, all performance chemicals. Valuable because it records what the buyer could see when they decided - stock on hand, stock on the water, average sales, the last price paid. Status is decoded against crm''s own ApprovalStatus master.';
 COMMENT ON COLUMN fact_requisition_line.requisition_line_id IS 'PurchaseRequisitionDtls.line_id. The key.';
@@ -392,30 +417,42 @@ COMMENT ON COLUMN fact_requisition_line.status IS 'Decoded against crm''s Approv
 COMMENT ON COLUMN fact_requisition_line.is_approved IS 'Fully approved: code 6 (approve) or 15 (direct approval). Note this is not the same as referback (8), which earlier read as approved-adjacent before the master was loaded.';
 COMMENT ON COLUMN fact_requisition_line.is_referred_back IS 'Sent back to the requester - code 8. Previously mislabelled: the negative codes are awaiting, not referred back.';
 COMMENT ON COLUMN fact_requisition_line.is_part_approved IS 'Through some but not all approval levels (codes 1 to 5).';
-COMMENT ON COLUMN fact_requisition_line.requisition_status IS 'The same decode for the requisition as a whole, from its header.';
+COMMENT ON COLUMN fact_requisition_line.requisition_status IS 'The header''s own status - the stamp of the last approver action on any approval group, NOT a roll-up of its lines. Around nine hundred headers disagree with their own lines, including approved headers holding lines that were never approved. Filter on the line status, not this one.';
 COMMENT ON COLUMN fact_requisition_line.onhand_stock IS 'Stock the buyer could see at the time, not today. This is history and must not be refreshed.';
 COMMENT ON COLUMN fact_requisition_line.eta_stock IS 'Stock already on order and expected, as at the time of the request.';
 COMMENT ON COLUMN fact_requisition_line.stock_days IS 'How many days the stock would last at the then average sales. A few hundred rows are absurd because crm divided by zero sales - stock_days_is_meaningless flags them.';
 COMMENT ON COLUMN fact_requisition_line.last_3_cycle_qty IS 'Crm''s own demand baseline: average consumption per cycle over the last three cycles. Only filled from 2023, and only on about one domestic or import line in five - so it is a benchmark where present, not a complete series.';
 COMMENT ON COLUMN fact_requisition_line.last_6_cycle_qty IS 'The same over six cycles. Where both exist, the three cycle figure running higher means demand is accelerating.';
-COMMENT ON COLUMN fact_requisition_line.payment_due_days IS 'Days to pay, read off the term name because crm publishes no master for these term ids. Null where the name does not carry a number. Zero for advance and immediate terms - but an advance is paid before delivery, so read it together with payment_basis.';
-COMMENT ON COLUMN fact_requisition_line.payment_basis IS 'What the days are counted from: the term date, the shipping document, immediate, or advance (paid up front). Two terms of sixty days are not the same money if one counts from shipment.';
+COMMENT ON COLUMN fact_requisition_line.payment_due_days IS 'Days to pay, from crm''s own terms master (ApTermsTls, mirrored from oracle). Zero for immediate and advance terms - but an advance is paid before delivery, so read it together with payment_basis.';
+COMMENT ON COLUMN fact_requisition_line.payment_basis IS 'What the days are counted from, per oracle''s term group: the term date, the shipping document (plain, letter of credit, standby or documents against acceptance), immediate, cash against documents, a post dated cheque, or part advance. Two terms of sixty days are not the same money if one counts from shipment.';
+COMMENT ON COLUMN fact_requisition_line.last_po_payment_term IS 'The term on the previous order of this item, resolved to its name. Null where there was no previous order.';
 COMMENT ON COLUMN fact_requisition_line.last_po_payment_term_id IS 'The payment term on the previous order for this item. Null when there was no previous order.';
-COMMENT ON COLUMN fact_requisition_line.payment_term_changed IS 'True where this requisition uses different payment terms from the last order of the same item. Worth watching: terms drift quietly.';
+COMMENT ON COLUMN fact_requisition_line.payment_term_changed IS 'True where this requisition uses different payment terms from the last order of the same item, false where they match, and NULL where there is nothing to compare with - crm writes a zero term id when the item has no previous order. Worth watching: terms drift quietly.';
 COMMENT ON COLUMN fact_requisition_line.reached_oracle IS 'True once crm has pushed the line to oracle and stamped a po line on it.';
 
 
 -- ---------------------------------------------------------------------------------------------------------------
 -- fact_internal_transfer: the branch replenishment lane, reconstructed from lot numbers.
 --
--- crm cannot give us this (asked sep 2026, declined) and it does not need to. the despatch date is already on the
--- receipt row - crm mislabels it receipt_date. the arrival is the first day that same lot appears in the stock
--- table at the receiving warehouse. the difference is transit.
+-- crm cannot give us this (asked sep 2026, declined) and it does not need to. the despatch date is already
+-- on the receipt row - crm mislabels it receipt_date. the arrival comes from the lot number.
+--
+-- three things the stock table forces on us, all measured:
+--   it is an OPENING balance   a row dated X is the position at the START of X. checked against vendor
+--                              receipts, whose receipt date is real: 97% of their lots first appear on
+--                              receipt date + 1 and only 0.1% on the day. so arrival = first_seen - 1,
+--                              and a lot first seen ON the despatch day was already there.
+--   it starts in 2024          a despatch older than the first snapshot can never be matched; its lot
+--                              simply appears on the first snapshot and reads as a long journey.
+--   a lot is not an item       lot numbers are receipt batch ids and are reused across items, so the item
+--                              has to be part of the key or one item inherits another item's date.
 -- ---------------------------------------------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS fact_internal_transfer CASCADE;
 
 CREATE MATERIALIZED VIEW fact_internal_transfer AS
 WITH stock_from AS (
+    -- the first snapshot in the whole stock table. gate on this one global date, never per warehouse:
+    -- some warehouses join the stock table late simply because they are new, and their transfers are real.
     SELECT min(trans_date) AS first_day FROM "BiStockDetail"
 ),
 despatch AS (
@@ -435,18 +472,16 @@ despatch AS (
       AND nullif(btrim(g.lot_number), '') IS NOT NULL
 ),
 lot_seen AS (
-    -- one row per lot and warehouse: the first day the stock table ever saw it there.
-    -- that single number answers both questions the rule needs, so no range join is required:
-    --   seen before the despatch  -> the lot was already there, nothing can be called an arrival
-    --   seen on or after it       -> that first sighting IS the arrival
-    SELECT btrim(lot_number) AS lot_number, inventory_org_id, min(trans_date) AS first_seen
+    -- first day the stock table shows this lot OF THIS ITEM at this warehouse
+    SELECT btrim(lot_number) AS lot_number, inventory_org_id, item_id, min(trans_date) AS first_seen
     FROM "BiStockDetail"
-    WHERE nullif(btrim(lot_number), '') IS NOT NULL
-    GROUP BY btrim(lot_number), inventory_org_id
+    WHERE nullif(btrim(lot_number), '') IS NOT NULL AND item_id IS NOT NULL
+    GROUP BY btrim(lot_number), inventory_org_id, item_id
 )
 SELECT d.transfer_id,
        d.despatch_date,
-       CASE WHEN f.first_seen >= d.despatch_date THEN f.first_seen END AS arrived_on,
+       CASE WHEN d.despatch_date >= k.first_day AND f.first_seen > d.despatch_date
+            THEN f.first_seen - 1 END                  AS arrived_on,
        d.from_warehouse_id,
        d.from_warehouse_name,
        d.to_warehouse_id,
@@ -455,38 +490,53 @@ SELECT d.transfer_id,
        d.lot_number,
        d.quantity,
        d.value,
-       CASE WHEN f.first_seen >= d.despatch_date THEN f.first_seen - d.despatch_date END
-                                                       AS transit_days,
-       coalesce(f.first_seen < d.despatch_date, false) AS lot_pre_existed,
+       CASE WHEN d.despatch_date >= k.first_day AND f.first_seen > d.despatch_date
+            THEN f.first_seen - d.despatch_date - 1 END AS transit_days,
+       -- seen ON the despatch day counts as already there: the snapshot is that morning's position
+       coalesce(f.first_seen <= d.despatch_date, false) AS lot_pre_existed,
        f.first_seen IS NOT NULL                        AS lot_was_found,
-       -- a measurement we trust: the lot was found, the destination did not already hold it,
-       -- and it arrived inside a sane window
-       f.first_seen IS NOT NULL
-         AND f.first_seen >= d.despatch_date
-         AND f.first_seen - d.despatch_date <= 60      AS is_measured,
-       -- the stock table only starts in 2024, so older despatches can never be matched
-       d.despatch_date >= (SELECT first_day FROM stock_from)
-                                                       AS has_stock_history
+       d.despatch_date >= k.first_day
+         AND f.first_seen IS NOT NULL
+         AND f.first_seen > d.despatch_date
+         AND f.first_seen - d.despatch_date - 1 <= 60  AS is_measured,
+       d.despatch_date >= k.first_day                  AS has_stock_history,
+       -- the stock table only became daily in nov 2024. before that it is five to seven snapshots a month,
+       -- which pushes transit about two days high.
+       d.despatch_date >= DATE '2024-11-15'            AS daily_resolution,
+       -- one consignment is often booked as several consecutive receipt rows. transit is identical across
+       -- them, so aggregate on the primary row and use the movement quantity, or the lane counts inflate.
+       sum(d.quantity) OVER w                          AS movement_quantity,
+       sum(d.value) OVER w                             AS movement_value,
+       row_number() OVER (w ORDER BY d.transfer_id) = 1 AS is_movement_primary
 FROM despatch d
-LEFT JOIN lot_seen f ON f.lot_number = d.lot_number AND f.inventory_org_id = d.to_warehouse_id;
+CROSS JOIN stock_from k
+LEFT JOIN lot_seen f ON f.lot_number = d.lot_number
+                    AND f.inventory_org_id = d.to_warehouse_id
+                    AND f.item_id = d.item_id
+WINDOW w AS (PARTITION BY d.despatch_date, d.from_warehouse_id, d.to_warehouse_id, d.item_id, d.lot_number);
 
 CREATE UNIQUE INDEX fact_internal_transfer_pk ON fact_internal_transfer (transfer_id);
 CREATE INDEX fact_internal_transfer_lane ON fact_internal_transfer (from_warehouse_id, to_warehouse_id);
 CREATE INDEX fact_internal_transfer_item ON fact_internal_transfer (item_id, despatch_date);
 
-COMMENT ON MATERIALIZED VIEW fact_internal_transfer IS 'One row per stock movement between our own warehouses, with how long it took. Built without any help from crm: the despatch date is what crm calls receipt_date on an internal order row, and the arrival is the first day that lot turns up in the stock table at the destination. A movement is only measured where the destination did not already hold that lot - see lot_pre_existed. Filter on is_measured before averaging: an unmeasured row has no arrival, not a zero.';
-COMMENT ON COLUMN fact_internal_transfer.transfer_id IS 'The receipt row this was built from (fact_goods_receipt.receipt_row_id).';
+COMMENT ON MATERIALIZED VIEW fact_internal_transfer IS 'One row per receipt row of stock moved between our own warehouses, with how long it took. Built without any help from crm: the despatch date is what crm calls receipt_date on an internal order row, and the arrival is read from the lot number in the stock table. Filter on is_measured before averaging, and on is_movement_primary before counting - one consignment is often several rows.';
+COMMENT ON COLUMN fact_internal_transfer.transfer_id IS 'The receipt row this was built from (fact_goods_receipt.receipt_row_id). Regenerated on every nightly load - never store it anywhere outside this view.';
 COMMENT ON COLUMN fact_internal_transfer.despatch_date IS 'When the sending warehouse shipped. Crm stores it as receipt_date, which is a misnomer on internal orders - measured, it falls on the sending warehouse''s own despatch day.';
-COMMENT ON COLUMN fact_internal_transfer.arrived_on IS 'First day the stock table saw this lot at the receiving warehouse, counting only from the despatch onward. Null where the lot was never matched, or where the destination already held the lot so no arrival can be told apart from the stock already there.';
+COMMENT ON COLUMN fact_internal_transfer.arrived_on IS 'The day the stock actually reached the destination. The stock table is an opening balance - a row dated X is the position at the start of X - so this is the first sighting minus one day. Verified against vendor receipts, where the true receipt date is known: 97% first appear the morning after.';
 COMMENT ON COLUMN fact_internal_transfer.transit_days IS 'Arrival minus despatch. Includes any quality hold, because a lot sitting in quarantine still counts as present.';
-COMMENT ON COLUMN fact_internal_transfer.is_measured IS 'True where the lot was found, the destination did not already hold it, and it arrived within sixty days. Always filter on this before averaging.';
-COMMENT ON COLUMN fact_internal_transfer.lot_was_found IS 'The lot turned up in the stock table at the destination at all. False means a blank lot, stock consumed between two snapshots, or a despatch older than the stock history. With lot_pre_existed it tells the three reasons a movement is unmeasured apart.';
-COMMENT ON COLUMN fact_internal_transfer.lot_pre_existed IS 'The destination already held this lot before the despatch - an earlier tranche, or a supplier batch number shared across warehouses. The first sighting afterwards is then stock that was already there, not an arrival, so these movements are left unmeasured. About one in five would otherwise read as same-day and drag the medians down.';
-COMMENT ON COLUMN fact_internal_transfer.has_stock_history IS 'False for despatches older than the stock table, which can never be matched. Resolution is daily only from late 2024, so treat earlier transit times as rough.';
+COMMENT ON COLUMN fact_internal_transfer.is_measured IS 'True where the despatch is inside the stock history, the lot was found for this item, it was not already at the destination, and it arrived within sixty days. Always filter on this before averaging.';
+COMMENT ON COLUMN fact_internal_transfer.lot_pre_existed IS 'The destination already held this lot of this item on the morning it was despatched - an earlier tranche, or a batch number shared with another consignment. No arrival can be told apart from the stock already there, so these are left unmeasured.';
+COMMENT ON COLUMN fact_internal_transfer.lot_was_found IS 'The lot turned up in the stock table at the destination at all. False means a blank lot, or stock consumed between two snapshots.';
+COMMENT ON COLUMN fact_internal_transfer.has_stock_history IS 'The despatch is inside the stock table''s history. Older movements cannot be matched: their lot simply appears on the first snapshot, which reads as a journey of weeks rather than days.';
+COMMENT ON COLUMN fact_internal_transfer.daily_resolution IS 'The stock table was daily by this despatch date (from mid November 2024). Before that it ran five to seven snapshots a month, which reads about two days high. Filter on it when precision matters.';
+COMMENT ON COLUMN fact_internal_transfer.is_movement_primary IS 'One row per real consignment. A consignment booked as several consecutive receipt rows would otherwise be counted several times - transit is identical across them.';
+COMMENT ON COLUMN fact_internal_transfer.movement_quantity IS 'Quantity of the whole consignment, summed across its receipt rows. Use this with is_movement_primary; use quantity only at row grain.';
 
 
 -- ---------------------------------------------------------------------------------------------------------------
 -- v_transfer_lane: how long each lane takes. the number a planner needs when moving stock between branches.
+-- this, not the per-item figure, is the better predictor: measured out of sample the lane median beats any
+-- per-item statistic, because an item moves on several lanes with quite different journeys.
 -- ---------------------------------------------------------------------------------------------------------------
 DROP VIEW IF EXISTS v_transfer_lane CASCADE;
 
@@ -497,22 +547,77 @@ SELECT t.from_warehouse_id,
        w.warehouse_name                                AS to_warehouse_name,
        w.branch_name                                   AS to_branch_name,
        count(*)                                        AS movements,
+       count(*) FILTER (WHERE t.daily_resolution)      AS movements_daily_era,
        count(DISTINCT t.item_id)                       AS items,
        min(t.despatch_date)                            AS first_movement,
        max(t.despatch_date)                            AS last_movement,
        percentile_cont(0.5) WITHIN GROUP (ORDER BY t.transit_days)  AS transit_days_median,
        percentile_cont(0.9) WITHIN GROUP (ORDER BY t.transit_days)  AS transit_days_p90,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY t.transit_days)
+         FILTER (WHERE t.daily_resolution)             AS transit_days_median_daily,
+       percentile_cont(0.9) WITHIN GROUP (ORDER BY t.transit_days)
+         FILTER (WHERE t.daily_resolution)             AS transit_days_p90_daily,
        max(t.transit_days)                             AS transit_days_max,
-       round(sum(t.value)::numeric, 0)                 AS value_moved
+       round(sum(t.movement_value)::numeric, 0)        AS value_moved,
+       count(*) >= 50                                  AS is_reliable
 FROM fact_internal_transfer t
 JOIN dim_warehouse w ON w.warehouse_id = t.to_warehouse_id
-WHERE t.is_measured
+WHERE t.is_measured AND t.is_movement_primary
 GROUP BY t.from_warehouse_id, t.from_warehouse_name, t.to_warehouse_id, w.warehouse_name, w.branch_name;
 
-COMMENT ON VIEW v_transfer_lane IS 'One row per sending warehouse to receiving warehouse lane, with how many days stock actually takes to get there. Use the median for planning and the p90 for a safety buffer. Lanes with only a handful of movements are noise - check the movements column before trusting a number.';
-COMMENT ON COLUMN v_transfer_lane.transit_days_median IS 'The typical transit for this lane. Most are two or three days.';
+COMMENT ON VIEW v_transfer_lane IS 'One row per sending warehouse to receiving warehouse lane, with how many days stock actually takes. This is the number to plan a transfer with - better than the per-item figure, because one item moves on several lanes at quite different speeds. Use the median for planning and the p90 for a buffer, and check is_reliable first.';
+COMMENT ON COLUMN v_transfer_lane.movements IS 'Measured consignments behind the numbers, counted once each even where crm booked one consignment as several receipt rows.';
+COMMENT ON COLUMN v_transfer_lane.is_reliable IS 'At least fifty measured movements. Below that treat the medians as indicative.';
+COMMENT ON COLUMN v_transfer_lane.transit_days_median IS 'The typical transit for this lane, over all measured movements.';
+COMMENT ON COLUMN v_transfer_lane.transit_days_median_daily IS 'The same over movements since the stock table became daily. Where the two differ the daily figure is the truer one - the weekly era reads about two days high.';
 COMMENT ON COLUMN v_transfer_lane.transit_days_p90 IS 'Nine movements in ten arrive within this many days. The number to plan a buffer against.';
-COMMENT ON COLUMN v_transfer_lane.movements IS 'How many measured movements this lane is based on. Below about fifty, treat the medians as indicative.';
+
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- v_supplier_leg: one row per purchase order line that was delivered, with how long it took.
+-- the single source both lead-time views read, so they can never drift apart.
+--
+-- zero-day legs are the trap here. a purchase order booked on the day the goods arrive is paperwork, not
+-- supply: 14% of domestic legs and 8% of import legs. leaving them in drags a country's median far below
+-- what an actual order takes. they stay in the counts - they really did happen - but out of the percentiles.
+-- ---------------------------------------------------------------------------------------------------------------
+DROP VIEW IF EXISTS v_supplier_leg CASCADE;
+
+CREATE VIEW v_supplier_leg AS
+WITH po AS (
+    -- one po line, one date. the line repeats where a shipment was redirected, so take its earliest order date
+    SELECT po_line_id,
+           min(po_date)               AS po_date,
+           min(item_id)               AS item_id,
+           min(procurement_type)      AS procurement_type,
+           min(supplier_country_code) AS country_code
+    FROM fact_po_line
+    WHERE po_line_id IS NOT NULL AND po_date IS NOT NULL
+    GROUP BY po_line_id
+),
+first_receipt AS (
+    -- when a po line first saw stock. a line delivered in parts counts from its first delivery
+    SELECT po_line_id, min(receipt_date) AS receipt_date
+    FROM fact_goods_receipt
+    WHERE is_purchase AND po_line_id IS NOT NULL
+    GROUP BY po_line_id
+)
+SELECT p.po_line_id,
+       p.item_id,
+       p.procurement_type,
+       p.country_code,
+       p.po_date,
+       r.receipt_date,
+       r.receipt_date - p.po_date                      AS days,
+       r.receipt_date = p.po_date                      AS is_zero_day
+FROM first_receipt r
+JOIN po p ON p.po_line_id = r.po_line_id
+WHERE r.receipt_date >= p.po_date
+  AND r.receipt_date - p.po_date <= 365;
+
+COMMENT ON VIEW v_supplier_leg IS 'One row per purchase order line that was actually delivered: what was ordered, from where, and how many days it took. Both lead-time views are built on this one view so they cannot drift apart. Mind is_zero_day - an order booked on the day the goods arrive is paperwork catching up, not a real lead time.';
+COMMENT ON COLUMN v_supplier_leg.days IS 'Order date to first delivery. Zero where the order was raised on the day the goods landed.';
+COMMENT ON COLUMN v_supplier_leg.is_zero_day IS 'The order and the delivery share a date - the paperwork was raised after the fact. About one domestic leg in seven and one import leg in thirteen. Real, so it stays in the counts, but it is not a lead time and is kept out of the percentiles.';
 
 
 -- ---------------------------------------------------------------------------------------------------------------
@@ -522,158 +627,121 @@ COMMENT ON COLUMN v_transfer_lane.movements IS 'How many measured movements this
 DROP VIEW IF EXISTS v_lead_time_by_country CASCADE;
 
 CREATE VIEW v_lead_time_by_country AS
-WITH po AS (
-    SELECT po_line_id, min(po_date) AS po_date, min(procurement_type) AS procurement_type,
-           min(supplier_country_code) AS country_code
-    FROM fact_po_line WHERE po_line_id IS NOT NULL AND po_date IS NOT NULL
-    GROUP BY po_line_id
-),
-first_receipt AS (
-    SELECT po_line_id, min(receipt_date) AS receipt_date
-    FROM fact_goods_receipt WHERE is_purchase AND po_line_id IS NOT NULL
-    GROUP BY po_line_id
-),
-leg AS (
-    SELECT p.procurement_type, p.country_code, r.receipt_date - p.po_date AS days
-    FROM first_receipt r JOIN po p ON p.po_line_id = r.po_line_id
-    WHERE r.receipt_date >= p.po_date AND r.receipt_date - p.po_date <= 365
-      AND p.country_code IS NOT NULL
-)
 SELECT procurement_type,
        country_code,
        count(*)                                        AS observations,
-       percentile_cont(0.5) WITHIN GROUP (ORDER BY days) AS days_median,
-       percentile_cont(0.9) WITHIN GROUP (ORDER BY days) AS days_p90
-FROM leg
+       count(*) FILTER (WHERE is_zero_day)             AS zero_day_legs,
+       round(100.0 * count(*) FILTER (WHERE is_zero_day) / count(*), 1) AS zero_day_share_pct,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY days) FILTER (WHERE NOT is_zero_day) AS days_median,
+       percentile_cont(0.9) WITHIN GROUP (ORDER BY days) FILTER (WHERE NOT is_zero_day) AS days_p90
+FROM v_supplier_leg
+WHERE country_code IS NOT NULL
 GROUP BY 1, 2
 HAVING count(*) >= 30;
 
-COMMENT ON VIEW v_lead_time_by_country IS 'How long a purchase takes, by the way it is bought and the country it comes from. Country explains far more of an import lead time than the procurement type does - the United States and Spain are both "import" and weeks apart. Only combinations with at least thirty measured orders appear, so every row is worth planning against.';
-COMMENT ON COLUMN v_lead_time_by_country.days_median IS 'Typical days from order to first delivery for this combination.';
-COMMENT ON COLUMN v_lead_time_by_country.days_p90 IS 'Nine orders in ten arrive within this many days.';
-COMMENT ON COLUMN v_lead_time_by_country.observations IS 'Measured orders behind the numbers. Never fewer than thirty.';
+COMMENT ON VIEW v_lead_time_by_country IS 'How long a purchase takes, by the way it is bought and the country it comes from. Country explains far more of an import lead time than the procurement type does - the United States and Spain are both "import" and weeks apart. Only combinations with at least thirty measured orders appear.';
+COMMENT ON COLUMN v_lead_time_by_country.days_median IS 'Typical days from order to first delivery, counting only orders that were not raised on the delivery day.';
+COMMENT ON COLUMN v_lead_time_by_country.days_p90 IS 'Nine orders in ten arrive within this many days, on the same basis.';
+COMMENT ON COLUMN v_lead_time_by_country.observations IS 'Measured orders behind the numbers, including the zero-day ones. Never fewer than thirty.';
+COMMENT ON COLUMN v_lead_time_by_country.zero_day_share_pct IS 'How much of this tier is paperwork raised on the delivery day. A high share means the real ordering process here is not visible in the data at all.';
 
 
 -- ---------------------------------------------------------------------------------------------------------------
--- dim_item_lead_time: per item, how long supply actually takes. the supplier leg and the transfer leg, separately.
+-- dim_item_lead_time: per item, how long supply actually takes. the supplier leg and the transfer leg,
+-- kept apart. the transfer figure here BLENDS lanes - take the transfer leg from v_transfer_lane instead
+-- wherever the warehouses are known.
 -- ---------------------------------------------------------------------------------------------------------------
 DROP MATERIALIZED VIEW IF EXISTS dim_item_lead_time CASCADE;
 
 CREATE MATERIALIZED VIEW dim_item_lead_time AS
-WITH po AS (
-    -- one po line, one date. the line repeats where a shipment was redirected, so take its earliest order date
-    SELECT po_line_id, min(po_date) AS po_date, min(procurement_type) AS procurement_type,
-           min(supplier_country_code) AS country
-    FROM fact_po_line
-    WHERE po_line_id IS NOT NULL AND po_date IS NOT NULL
-    GROUP BY po_line_id
-),
-first_receipt AS (
-    -- when a po line first saw stock. a line delivered in parts counts from its first delivery
-    SELECT po_line_id, item_id, min(receipt_date) AS receipt_date
-    FROM fact_goods_receipt
-    WHERE is_purchase AND po_line_id IS NOT NULL
-    GROUP BY po_line_id, item_id
-),
-supplier_leg AS (
-    SELECT r.item_id,
-           p.procurement_type,
-           p.country,
-           r.receipt_date - p.po_date                  AS days
-    FROM first_receipt r
-    JOIN po p ON p.po_line_id = r.po_line_id
-    WHERE r.receipt_date >= p.po_date
-      AND r.receipt_date - p.po_date <= 365
-),
-supplier_stats AS (
+WITH supplier_stats AS (
     SELECT item_id,
            count(*)                                    AS supplier_observations,
-           percentile_cont(0.5) WITHIN GROUP (ORDER BY days) AS supplier_days_median,
-           percentile_cont(0.9) WITHIN GROUP (ORDER BY days) AS supplier_days_p90,
-           mode() WITHIN GROUP (ORDER BY procurement_type)   AS procurement_type,
-           mode() WITHIN GROUP (ORDER BY country)            AS country
-    FROM supplier_leg
+           count(*) FILTER (WHERE is_zero_day)         AS supplier_zero_day_legs,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY days) FILTER (WHERE NOT is_zero_day) AS supplier_days_median,
+           percentile_cont(0.9) WITHIN GROUP (ORDER BY days) FILTER (WHERE NOT is_zero_day) AS supplier_days_p90,
+           mode() WITHIN GROUP (ORDER BY procurement_type) AS procurement_type,
+           mode() WITHIN GROUP (ORDER BY country_code)     AS country_code
+    FROM v_supplier_leg
     GROUP BY item_id
-),
--- where an item has too little of its own history, borrow from everything bought the same way from
--- the same country. an order from Spain and one from the United States are both "import" and weeks apart,
--- so the country tier matters far more than the type tier below it.
-country_stats AS (
-    SELECT procurement_type, country,
-           count(*)                                    AS observations,
-           percentile_cont(0.5) WITHIN GROUP (ORDER BY days) AS days_median,
-           percentile_cont(0.9) WITHIN GROUP (ORDER BY days) AS days_p90
-    FROM supplier_leg WHERE country IS NOT NULL
-    GROUP BY 1, 2 HAVING count(*) >= 30
 ),
 type_stats AS (
     SELECT procurement_type,
            count(*)                                    AS observations,
-           percentile_cont(0.5) WITHIN GROUP (ORDER BY days) AS days_median,
-           percentile_cont(0.9) WITHIN GROUP (ORDER BY days) AS days_p90
-    FROM supplier_leg
-    GROUP BY 1
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY days) FILTER (WHERE NOT is_zero_day) AS days_median,
+           percentile_cont(0.9) WITHIN GROUP (ORDER BY days) FILTER (WHERE NOT is_zero_day) AS days_p90
+    FROM v_supplier_leg
+    GROUP BY procurement_type
 ),
 transfer_stats AS (
     SELECT item_id,
            count(*)                                    AS transfer_observations,
-           percentile_cont(0.5) WITHIN GROUP (ORDER BY transit_days) AS transfer_days_median,
-           percentile_cont(0.9) WITHIN GROUP (ORDER BY transit_days) AS transfer_days_p90
+           count(DISTINCT (from_warehouse_id, to_warehouse_id)) AS transfer_lanes,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY transit_days) AS transfer_days_median_blended,
+           percentile_cont(0.9) WITHIN GROUP (ORDER BY transit_days) AS transfer_days_p90_blended
     FROM fact_internal_transfer
-    WHERE is_measured
+    WHERE is_measured AND is_movement_primary
     GROUP BY item_id
+),
+resolved AS (
+    SELECT i.item_id,
+           i.item_code,
+           i.item_name,
+           i.division,
+           i.business,
+           i.pto_pts,
+           s.procurement_type,
+           s.country_code                              AS supplier_country_code,
+           s.supplier_observations,
+           s.supplier_zero_day_legs,
+           s.supplier_days_median,
+           s.supplier_days_p90,
+           t.transfer_observations,
+           t.transfer_lanes,
+           t.transfer_days_median_blended,
+           t.transfer_days_p90_blended,
+           -- what to plan with: the item's own history when it has enough, else its country, else its type
+           CASE WHEN coalesce(s.supplier_observations, 0) >= 3 AND s.supplier_days_median IS NOT NULL THEN 'item'
+                WHEN c.days_median IS NOT NULL                 THEN 'country'
+                WHEN ty.days_median IS NOT NULL                THEN 'procurement type'
+           END                                         AS supplier_days_source,
+           coalesce(CASE WHEN s.supplier_observations >= 3 THEN s.supplier_days_median END,
+                    c.days_median, ty.days_median)     AS supplier_days,
+           coalesce(CASE WHEN s.supplier_observations >= 3 THEN s.supplier_days_p90 END,
+                    c.days_p90, ty.days_p90)           AS supplier_days_p90_used,
+           coalesce(s.supplier_observations, 0) >= 3   AS supplier_leg_is_reliable,
+           coalesce(t.transfer_observations, 0) >= 3   AS transfer_leg_is_reliable
+    FROM dim_item i
+    LEFT JOIN supplier_stats s ON s.item_id = i.item_id
+    LEFT JOIN transfer_stats t ON t.item_id = i.item_id
+    LEFT JOIN v_lead_time_by_country c ON c.procurement_type = s.procurement_type
+                                      AND c.country_code = s.country_code
+    LEFT JOIN type_stats ty ON ty.procurement_type = s.procurement_type
+    WHERE i.is_performance_chemicals
+      AND (s.item_id IS NOT NULL OR t.item_id IS NOT NULL)
 )
-SELECT i.item_id,
-       i.item_code,
-       i.item_name,
-       i.division,
-       i.business,
-       i.pto_pts,
-       s.procurement_type,
-       s.country                                       AS supplier_country_code,
-       s.supplier_observations,
-       s.supplier_days_median,
-       s.supplier_days_p90,
-       -- what to actually plan with: the item's own history when it has enough, else its country, else its type
-       CASE WHEN coalesce(s.supplier_observations, 0) >= 3 THEN 'item'
-            WHEN c.days_median IS NOT NULL                 THEN 'country'
-            WHEN ty.days_median IS NOT NULL                THEN 'procurement type'
-       END                                             AS supplier_days_source,
-       coalesce(CASE WHEN s.supplier_observations >= 3 THEN s.supplier_days_median END,
-                c.days_median, ty.days_median)         AS supplier_days,
-       coalesce(CASE WHEN s.supplier_observations >= 3 THEN s.supplier_days_p90 END,
-                c.days_p90, ty.days_p90)               AS supplier_days_p90_used,
-       t.transfer_observations,
-       t.transfer_days_median,
-       t.transfer_days_p90,
-       -- what to plan with: buying it in, plus moving it to where it is needed
-       coalesce(s.supplier_days_median, 0) + coalesce(t.transfer_days_median, 0)
-                                                       AS total_days_median,
-       coalesce(s.supplier_days_p90, 0) + coalesce(t.transfer_days_p90, 0)
-                                                       AS total_days_p90,
-       -- how much to trust the row
-       coalesce(s.supplier_observations, 0) >= 3       AS supplier_leg_is_reliable,
-       coalesce(t.transfer_observations, 0) >= 3       AS transfer_leg_is_reliable
-FROM dim_item i
-LEFT JOIN supplier_stats s ON s.item_id = i.item_id
-LEFT JOIN transfer_stats t ON t.item_id = i.item_id
-LEFT JOIN country_stats c  ON c.procurement_type = s.procurement_type AND c.country = s.country
-LEFT JOIN type_stats ty    ON ty.procurement_type = s.procurement_type
-WHERE i.is_performance_chemicals
-  AND (s.item_id IS NOT NULL OR t.item_id IS NOT NULL);
+SELECT x.*,
+       -- built from the planning figures, not the raw medians: an item that fell back to its country has
+       -- one or two observations of its own, and adding those back in would be the anecdote we avoided.
+       coalesce(x.supplier_days, 0) + coalesce(x.transfer_days_median_blended, 0)
+                                                       AS total_days_indicative,
+       coalesce(x.supplier_days_p90_used, 0) + coalesce(x.transfer_days_p90_blended, 0)
+                                                       AS total_days_indicative_p90
+FROM resolved x;
 
 CREATE UNIQUE INDEX dim_item_lead_time_pk ON dim_item_lead_time (item_id);
 CREATE INDEX dim_item_lead_time_type ON dim_item_lead_time (procurement_type);
 
-COMMENT ON MATERIALIZED VIEW dim_item_lead_time IS 'Per item, how long supply really takes, measured from what happened rather than from a stated lead time. Two separate legs: buying it from a supplier, and moving it between our own warehouses. Only items with at least one measurement appear. Check the reliability flags before planning on a row - an item with one observation is an anecdote.';
-COMMENT ON COLUMN dim_item_lead_time.supplier_days_median IS 'Typical days from placing the order to the first delivery. Around five for domestic, forty for imports.';
-COMMENT ON COLUMN dim_item_lead_time.supplier_days_p90 IS 'Nine orders in ten arrive within this many days. Plan buffers against this, not the median.';
-COMMENT ON COLUMN dim_item_lead_time.transfer_days_median IS 'Typical days to move the item between our own warehouses, from fact_internal_transfer.';
-COMMENT ON COLUMN dim_item_lead_time.total_days_median IS 'The two legs added: order placed to available where it is needed. Where a leg has never been measured it counts as zero, so read it with the observation counts beside it.';
-COMMENT ON COLUMN dim_item_lead_time.procurement_type IS 'The way this item is usually bought, taken as the commonest across its orders. Note market procurement is effectively historic: the performance chemicals filter leaves barely any market lines after early 2024, so those rows describe the past.';
-COMMENT ON COLUMN dim_item_lead_time.supplier_leg_is_reliable IS 'True with three or more measured orders of this item. Below that its own median is a single anecdote - which is what supplier_days and supplier_days_source are for.';
-COMMENT ON COLUMN dim_item_lead_time.supplier_days IS 'The number to plan with. The item''s own median where it has three or more orders, otherwise what everything bought the same way from the same country takes, otherwise the procurement type alone. supplier_days_source says which was used.';
+COMMENT ON MATERIALIZED VIEW dim_item_lead_time IS 'Per item, how long supply really takes, measured from what happened rather than from a stated lead time. Two legs kept apart: buying it from a supplier, and moving it between our own warehouses. Only items with at least one measurement appear.';
+COMMENT ON COLUMN dim_item_lead_time.supplier_days IS 'The number to plan with. The item''s own median where it has three or more delivered orders, otherwise what everything bought the same way from the same country takes, otherwise the procurement type alone. supplier_days_source says which was used.';
 COMMENT ON COLUMN dim_item_lead_time.supplier_days_source IS 'Where supplier_days came from: item, country or procurement type. Half the import book has too few orders of its own, and country is much the better fallback - Spain and the United States are both "import" and weeks apart.';
+COMMENT ON COLUMN dim_item_lead_time.supplier_days_median IS 'The item''s own median, over its delivered orders that were not raised on the delivery day. Use supplier_days for planning - this is the raw figure, and on an item with one or two orders it is an anecdote.';
+COMMENT ON COLUMN dim_item_lead_time.supplier_zero_day_legs IS 'How many of this item''s orders were raised on the day the goods arrived. They count as observations but are kept out of the medians.';
+COMMENT ON COLUMN dim_item_lead_time.supplier_leg_is_reliable IS 'Three or more delivered orders of this item. Below that its own median is a single anecdote - which is what supplier_days and supplier_days_source are for.';
+COMMENT ON COLUMN dim_item_lead_time.transfer_days_median_blended IS 'Days to move this item between our own warehouses, BLENDED across every lane it travels. An item on a one day lane and an eleven day lane reports something in between that matches neither. Where the warehouses are known, take the transfer leg from v_transfer_lane instead; transfer_lanes says how many this blends.';
+COMMENT ON COLUMN dim_item_lead_time.transfer_lanes IS 'How many distinct lanes the blended transfer figure covers. More than one means the figure describes no actual journey.';
+COMMENT ON COLUMN dim_item_lead_time.total_days_indicative IS 'Supplier days plus the blended transfer days - a rough order-to-available figure for ranking items, not a promise. A real total needs the lane, so take it from v_open_po or pair supplier_days with v_transfer_lane. Where a leg was never measured it counts as zero.';
+COMMENT ON COLUMN dim_item_lead_time.procurement_type IS 'The way this item is usually bought, taken as the commonest across its orders. Note market procurement is effectively historic: the performance chemicals filter leaves barely any market lines after early 2024, so those rows describe the past.';
 COMMENT ON COLUMN dim_item_lead_time.supplier_country_code IS 'Where this item is usually bought from, as the commonest country across its orders.';
 
 

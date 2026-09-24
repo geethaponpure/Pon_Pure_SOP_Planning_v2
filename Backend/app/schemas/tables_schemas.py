@@ -894,13 +894,27 @@ TABLES_COLUMNS = {
         "country_of_origin_code", # where the goods are made, when it differs from the address
         "purchasing_site_flag",   # Y = orders can be placed here
         "pay_site_flag",          # Y = invoices paid here
-        "terms_id",               # -> PaymentTerms, this site's own terms
+        "terms_id",               # -> ApTermsTls, this site's own terms
         "ship_via_lookup_code",   # carrier
         "freight_terms_lookup_code",
         "fob_lookup_code",        # where title passes
         "inactive_date",
         "creation_date",
         "last_update_date",
+    ],
+
+    "ApTermsTls": [               # the payment terms master from oracle, 87 rows. upsert, level 0
+        "term_id",                # pk, 10000 upward. resolves ApSuppliers.terms_id, the site terms_id,
+                                  # PurchaseRequisitionHdrs.payment_term_id and lastpotermid - all four in full.
+                                  # NOT dbo.PaymentTerms, which is the customer receivables master on another id space
+        "name",                   # 45 days (Term date + 45) / 100% Advance / Immediate
+        "description",
+        "due_days",               # days to pay. 0 = immediate
+        "enabled_flag",           # Y / N
+        "attribute1",             # oracle term group code
+        "attribute2",
+        "start_date_active",
+        "end_date_active",        # set = retired
     ],
 
     "ApprovalStatus": [           # the requisition workflow codes, 17 rows. upsert, level 0

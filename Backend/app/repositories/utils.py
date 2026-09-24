@@ -9,7 +9,7 @@
 #---------------- every run and merged on the pk. never truncated, everything else points at these -----------------------
 UPSERT_TABLES = {"Collectors", "MarketCircles", "CustomerMasters", "CustomerSites",
                  "ItemMasters", "ItemCategories", "DeliveryFroms", "QuotationStatus", 
-                 "JourneyCalendars", "ApSuppliers", "ApprovalStatus", "ApSupplierSitesAlls", "InventoryOrgs",
+                 "JourneyCalendars", "ApSuppliers", "ApprovalStatus", "ApTermsTls", "ApSupplierSitesAlls", "InventoryOrgs",
                  "Users", "Roles", "ArCustomers", "Reasons", "FinancialYears", "TempItemmasters", "JcWeeklyCalendars"}
 
 
@@ -652,7 +652,7 @@ PARENT_CHECK = {
 LOAD_LEVELS = [
 #================================================ LEVEL 0 ===========================================================
     ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms",
-     "QuotationStatus", "JourneyCalendars", "JcWeeklyCalendars", "ApSuppliers", "ApprovalStatus", "Users", "Roles", "Reasons", "FinancialYears"],   # no parents (Users only points at itself)
+     "QuotationStatus", "JourneyCalendars", "JcWeeklyCalendars", "ApSuppliers", "ApprovalStatus", "ApTermsTls", "Users", "Roles", "Reasons", "FinancialYears"],   # no parents (Users only points at itself)
 
 #================================================ LEVEL 1 ===========================================================
     ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "InventoryOrgs", "ApSupplierSitesAlls",

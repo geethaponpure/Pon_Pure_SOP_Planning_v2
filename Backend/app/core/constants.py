@@ -78,6 +78,7 @@ CRM_TABLES = {
         "PurchaseRequisitionDtls",
         "ApSuppliers",
         "ApprovalStatus",
+        "ApTermsTls",
         "ApSupplierSitesAlls"               
     ],
 

@@ -11,7 +11,7 @@ from .models.business_plan import (JourneyCalendars, JcWeeklyCalendars, SCBusine
                                    FinancialYears, TempItemmasters, SCLeadTargets, SCLeadTargetJcDtls, LeadDetails, LeadProducts,
                                    PcBusinessPlanReopens, SCBusinessPlanLogs, PlanSnapshot, ProjectionSnapshot,
                                    PlanApprovalHistory, PlanNameAlias)
-from .models.purchase_master import (ApprovalStatus, ApSuppliers, ApSupplierSitesAlls,
+from .models.purchase_master import (ApprovalStatus, ApTermsTls, ApSuppliers, ApSupplierSitesAlls,
                                      BiPoDetails, BiGrnDetails, PurchaseRequisitionHdrs, PurchaseRequisitionDtls)
 from .models.inventory_master import BiStockDetail, InventoryOrgs, ItemInventoryOrgMappings, BiCollectorInventoryOrgMapping
 from .models.user_and_scope import (Users, Roles, UserRoles, UserMarketCircleMappings, UserCollectorMappings,

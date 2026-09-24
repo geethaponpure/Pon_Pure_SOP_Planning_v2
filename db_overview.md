@@ -68,6 +68,7 @@ The monthly plan the branches fill in for their customers, cycle by cycle. A JC 
 - **BiGrnDetails** - everything that arrived at a warehouse: bought in, sent from another of our warehouses, returned by a customer, or a manual correction. Carries the landed cost and the batch number.
 - **ApprovalStatus** - the short list of codes a purchase requisition moves through, from waiting to approved, rejected or sent back.
 - **ApSupplierSitesAlls** - every address we buy from. A supplier can have several, and this is where the country is recorded.
+- **ApTermsTls** - the payment terms we buy on: how many days we get to pay, and what those days are counted from.
 - **SPBusinessPlanActualSales** - what was actually sold per cycle, as CRM computes it from invoices, by branch, customer and product name.
 - **SCBusinessPlanProjections** - the approved sales projection per branch and product for each cycle (the numbers sent to Oracle).
 - **SCLeadTargets** - the lead plan: what a branch expects to sell to a lead (a customer not yet won), per product and cycle.

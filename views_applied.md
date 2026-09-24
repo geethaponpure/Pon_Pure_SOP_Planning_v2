@@ -1208,7 +1208,8 @@ dim_supplier_site ───────────┘
 - the valuable part is the **context frozen at the moment of asking**: stock on hand, stock already on the water, average sales, days of cover, the last price paid, the last payment terms. This is history and must never be refreshed.
 - `last_3_cycle_qty` / `last_6_cycle_qty` are crm's own demand baseline. Present only from 2023 and only on about one domestic or import line in five - a benchmark where it exists, not a series.
 - `payment_term_changed` flags a line bought on different terms from last time. Terms drift quietly.
-- `payment_due_days` is **read off the term name**, because crm publishes no master for these term ids - its own payment terms table uses a different id space and matches none of them. `payment_basis` says what the days count from: the term date, the shipping document, immediate, or advance. Two sixty-day terms are not the same money if one counts from shipment.
+- `payment_due_days` comes from **crm's own terms master** (`ApTermsTls`, mirrored from oracle). `payment_basis` says what the days count from, using oracle's term group: the term date, the shipping document (plain, letter of credit, standby, or documents against acceptance), immediate, cash against documents, a post dated cheque, or part advance. Two sixty-day terms are not the same money if one counts from shipment.
+- `payment_term_changed` is **NULL, not false**, where the item has no previous order - crm writes a zero term id there, and treating that as a change flagged nine hundred lines wrongly.
 - status is decoded against **crm's own `ApprovalStatus` master**: approve, reject, referback, awaiting, refertoED, direct approval, cancel, and ten numbered approval levels.
 - two codes crm writes are **not in its own master**: `0`, which its screens treat as an unfinished draft, and `-2`, which shows as `unknown` rather than being guessed at.
 
@@ -1232,9 +1233,12 @@ We asked the crm team to add the internal order reference to the receipt feed. T
 ```
 
 - **filter on `is_measured` before averaging.** An unmeasured row has no arrival, not a zero.
-- **the destination must not already hold the lot.** If it does - an earlier tranche, or a supplier batch number several warehouses share - then the first sighting afterwards is the stock that was already there, not an arrival. About one movement in five, and they would otherwise all read as same-day and drag the medians down. `lot_pre_existed` marks them.
-- three reasons a movement is not measured, and they account for every row: the lot was already there (`lot_pre_existed`), the lot never turned up at all (`lot_was_found` false - a blank lot, or stock consumed between two snapshots), or it took over sixty days.
-- the port lanes are the control group: import lot numbers are unique, so their medians barely move under this rule. The branch lanes move by a day, which is the size of the bias.
+- **the stock table is an opening balance.** A row dated X is the position at the *start* of X, so the arrival is the first sighting **minus one day**. Checked against vendor receipts, where the true receipt date is known: 97% of their lots first appear the next morning, 0.1% on the day.
+- **the destination must not already hold the lot** - including on the despatch morning itself. An earlier tranche, or a batch number shared with another consignment, means no arrival can be told apart from the stock already there.
+- **a lot number is not an item.** Lots are receipt batch ids and get reused across items, so the item is part of the key. Without it, one item inherits another's arrival date.
+- **a despatch older than the stock table can never be matched.** Its lot simply turns up on the first snapshot, which reads as a journey of weeks. Gated on the one global first snapshot, never per warehouse - some warehouses join late only because they are new, and their transfers are real.
+- four reasons a movement is not measured, and they account for every row exactly: before the stock history, the lot was already there, the lot never turned up, or it took over sixty days.
+- `daily_resolution` marks despatches from mid November 2024, when the stock table became daily. Before that it ran five to seven snapshots a month and reads about two days high.
 - the stock table only starts in 2024 and is daily only from late that year, so `has_stock_history` is false for older movements and earlier transit times are rough.
 - a lot sitting in quality hold counts as arrived. For "when could the branch sell it" that is arguably right, but it does fold any hold into transit.
 
@@ -1247,7 +1251,9 @@ We asked the crm team to add the internal order reference to the receipt feed. T
 | one row per | sending warehouse → receiving warehouse |
 | answers | plan with the median, buffer with the p90 |
 
-- lanes built on a handful of movements are noise. Check `movements` before trusting a number.
+- **this is the number to plan a transfer with, not the per-item figure.** One item moves on several lanes at quite different speeds, so its pooled figure matches no actual journey. Measured out of sample, the lane median predicts better than any per-item statistic.
+- `is_reliable` marks lanes with at least fifty measured movements. Below that treat the medians as indicative.
+- `movements` counts real consignments, not rows: crm often books one consignment as several consecutive receipts, which would otherwise overcount by a few percent.
 
 ### dim_item_lead_time - how long supply really takes
 
@@ -1270,6 +1276,8 @@ We asked the crm team to add the internal order reference to the receipt feed. T
 ```
 
 - the middle step matters most on imports, where **half** the items have too little history of their own. Country medians run from about three weeks to eleven, against a single pooled "import" figure.
+- **orders raised on the day the goods arrive are excluded from every median.** They are paperwork catching up, not supply - one domestic leg in seven, and more than one market leg in four. They stay in the observation counts, because they really happened, but leaving them in the percentiles dragged whole countries down by weeks. `zero_day_share_pct` exposes how much of a tier is affected.
+- the transfer figure here **blends lanes** (`transfer_days_median_blended`), so `total_days_indicative` is for ranking items, not a promise. For a real total take the lane from `v_transfer_lane`, or read `v_open_po`, which knows the warehouse.
 - `supplier_days_median` and `supplier_leg_is_reliable` are still there for anyone who wants the item's own raw history.
 - note **market procurement is effectively historic**: the performance chemicals filter leaves barely any market lines after early 2024, so those rows describe the past.
 

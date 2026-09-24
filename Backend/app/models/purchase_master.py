@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, Text, Boolean, Numeric, Double, Date, DateTime, ForeignKey
+from sqlalchemy import Column, BigInteger, Integer, Text, Boolean, Numeric, Double, Date, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
@@ -13,11 +13,26 @@ from app.core.database import Base
 #   BiGrnDetails -> ItemMasters / ApSuppliers / InventoryOrgs      (what actually arrived)
 
 
-# note: crm's dbo.PaymentTerms (206 rows, ids 4 / 5 / 1000+) is NOT the master for the term ids our data
-# carries. ApSuppliers.terms_id, PurchaseRequisitionHdrs.payment_term_id and lastpotermid all use a 10xxx
-# id space with no overlap at all - measured sep 2026, zero matches either way. crm does not expose that
-# master, but the requisition carries the term NAME, so the due days are read off the name instead.
-# see fact_requisition_line.payment_due_days.
+class ApTermsTls(Base):
+
+    __tablename__ = "ApTermsTls"
+
+    # the payment terms master, mirrored from oracle ap_terms_tl. 87 rows, ids 10000 upward.
+    # it resolves EVERY term id we hold: ApSuppliers.terms_id, ApSupplierSitesAlls.terms_id,
+    # PurchaseRequisitionHdrs.payment_term_id and PurchaseRequisitionDtls.lastpotermid - all four, in full.
+    #
+    # do not confuse it with crm's dbo.PaymentTerms, which is the CUSTOMER receivables master on a
+    # different id space (4 / 5 / 1000+) and matches none of the above.
+
+    term_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    name = Column(Text)                                                      # 45 days (Term date + 45) / 100% Advance / Immediate
+    description = Column(Text)
+    due_days = Column(Integer)                                               # days to pay. 0 = immediate
+    enabled_flag = Column(Text)                                              # Y / N
+    attribute1 = Column(Text)                                                # oracle term group code
+    attribute2 = Column(Text)
+    start_date_active = Column(DateTime)
+    end_date_active = Column(DateTime)                                       # set = retired term
 
 
 class ApSupplierSitesAlls(Base):
@@ -39,7 +54,7 @@ class ApSupplierSitesAlls(Base):
     country_of_origin_code = Column(Text)                                    # where the goods are made, when it differs
     purchasing_site_flag = Column(Text)                                      # Y = orders can be placed on this address
     pay_site_flag = Column(Text)                                             # Y = invoices are paid to it
-    terms_id = Column(BigInteger)                                            # -> PaymentTerms, this site's own terms
+    terms_id = Column(BigInteger)                                            # -> ApTermsTls, this site's own terms
     ship_via_lookup_code = Column(Text)                                      # carrier
     freight_terms_lookup_code = Column(Text)                                 # who pays the freight
     fob_lookup_code = Column(Text)                                           # where title passes
@@ -75,7 +90,7 @@ class ApSuppliers(Base):
     segment1 = Column(Text)                                                  # oracle vendor number, = BiPoDetails.vendor_number
     vendor_type_lookup_code = Column(Text, index=True)                       # SUPPLIER / EMPLOYEE / TRANSPORTER / CONTRACTOR / CAPITAL .. 24 values
     pay_group_lookup_code = Column(Text)                                     # SUPPLIER / TRANSPORTER / EMPLOYEE, empty on 86%
-    terms_id = Column(Double)                                                # payment terms id, oracle stores it as float. cast in views
+    terms_id = Column(Double)                                                # -> ApTermsTls.term_id. oracle stores it as float, cast in views
     start_date_active = Column(DateTime)
     end_date_active = Column(DateTime)                                       # set on 23% = inactive vendor
     attribute8 = Column(Text)                                                # msme registered YES / NO
