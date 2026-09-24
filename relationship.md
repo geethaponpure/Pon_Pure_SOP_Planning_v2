@@ -409,6 +409,9 @@ The CRM Purchase data model consists of four main tables:
 - PurchaseRequisitionHdrs
 - PurchaseRequisitionDtls
 - BiPoDetails
+- BiGrnDetails
+- ApprovalStatus (the requisition workflow codes)
+- ApSupplierSitesAlls (supplier addresses - where the country lives)
 
 The logical business relationship is:
 
@@ -445,7 +448,14 @@ The relationships represent:
 - A requisition line, once approved, becomes an oracle po line: `PurchaseRequisitionDtls.po_line_id` → `BiPoDetails.po_line_id` on 89% of lines (the rest are drafts / rejected). Soft link, because `po_line_id` is not unique in the extract and `BiPoDetails` is regenerated every night.
 - `BiPoDetails` is the open-purchase source: `quantity - quantity_received - quantity_cancelled` is what is still in transit (36k lines).
 - `ApSuppliers` is the vendor master for both: `BiPoDetails.vendor_id` (100%) and `PurchaseRequisitionHdrs.supplier_id` (all but 178 drafts).
-- `ApSuppliers` is upsert (rows change - msme status, holds). The three others are snapshot: `BiPoDetails` because its `header_id` restarts from 1 every night (we use our own `id`), the requisition tables because status and the po link move after creation.
+- `ApSuppliers` is upsert (rows change - msme status, holds). The others are snapshot: `BiPoDetails` and `BiGrnDetails` because their `header_id` restarts from 1 every night (we use our own `id`), the requisition tables because status and the po link move after creation.
+- `BiGrnDetails` is what actually arrived. It has **no natural key at all**: a quarter of the rows (`source = 'Miss / Direct'`) carry no receipt id, and of those that do, a few thousand repeat because one delivery put away in pieces becomes several rows. Always SUM, never count rows, and never join on `header_id`.
+- **`BiGrnDetails.receipt_date` is the despatch date on an internal transfer**, not the arrival - crm takes it from the shipment record. The arrival is recovered from the lot number in `BiStockDetail`; see `fact_internal_transfer` in views_applied.md. The crm team were asked to add the internal order reference and declined, and it is no longer needed.
+- `BiPoDetails.vendor_site_id` → **`ApSupplierSitesAlls.vendor_site_id`** on 100% of lines, and every site carries a country. That country is the best single predictor of an import lead time - far better than `procurement_type`, which lumps Spain and the United States together.
+- **Payment term ids cannot be resolved.** `ApSuppliers.terms_id`, `PurchaseRequisitionHdrs.payment_term_id` and `PurchaseRequisitionDtls.lastpotermid` all use a `10xxx` id space. Crm's `PaymentTerms` table uses `4` / `5` / `1000+` and matches **none** of them (measured sep 2026: zero overlap either way). `SupplierPaymentTerms` carries the `10xxx` ids but is a supplier x item-group mapping, not the master. The requisition does carry the term *name*, so the days are read off that instead.
+- `PurchaseRequisitionDtls.status_id` and `PurchaseRequisitionHdrs.status_id` decode against **`ApprovalStatus`** (17 rows: `-1` awaiting, `1`-`5` and `10`-`14` numbered approval levels, `6` approve, `7` reject, `8` referback, `9` refer to ED, `15` direct approval, `16` cancel). No foreign key: crm also writes `0` (an unfinished draft) and `-2`, neither of which is in its own master.
+- `BiPoDetails` has two shapes that mislead if taken at face value. Oracle **zeroes the quantity** when a line is fully cancelled and keeps the original in `quantity_cancelled`, so the ordered quantity reads 0 on those lines. And a **redirected shipment** leaves two rows on one `po_line_id`, one per warehouse, sharing the order quantity but with the receipt on only one - so `(po_line_id, inv_org_id)` is the real key, and pending has to be worked out per line rather than per row.
+- `PurchaseRequisitionDtls` also carries `last3jc_qty` / `last6jc_qty` (crm's own average consumption over the last 3 and 6 cycles, from 2023, about one line in five) and `lastpotermid` (the payment term on the previous order for that item - the same id space as `payment_term_id` on the header).
 
 Links to the master tables:
 

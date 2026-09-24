@@ -9,7 +9,7 @@
 #---------------- every run and merged on the pk. never truncated, everything else points at these -----------------------
 UPSERT_TABLES = {"Collectors", "MarketCircles", "CustomerMasters", "CustomerSites",
                  "ItemMasters", "ItemCategories", "DeliveryFroms", "QuotationStatus", 
-                 "JourneyCalendars", "ApSuppliers", "InventoryOrgs",
+                 "JourneyCalendars", "ApSuppliers", "ApprovalStatus", "ApSupplierSitesAlls", "InventoryOrgs",
                  "Users", "Roles", "ArCustomers", "Reasons", "FinancialYears", "TempItemmasters", "JcWeeklyCalendars"}
 
 
@@ -26,7 +26,7 @@ INNER_WORKERS = 4           # crm connections one large table may open. keep out
 SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules",
                    "DispatchDetails", "QuotationHdrs", "QuotationDtls",
                    "SCBusinessMonthlyPlanHdrs", "SCBusinessMonthlyPlanDtls", "SCBusinessMonthlyPlanJCDtls",
-                   "BiPoDetails", "PurchaseRequisitionHdrs", "PurchaseRequisitionDtls",
+                   "BiPoDetails", "BiGrnDetails", "PurchaseRequisitionHdrs", "PurchaseRequisitionDtls",
                    "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping",
                    "UserRoles", "UserMarketCircleMappings", "UserCollectorMappings",
                    "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings",
@@ -57,6 +57,8 @@ SOURCE_FILTERS = {
     "SocPendingDetails": "[ITEMCODE] IN (SELECT i.item_code FROM [CRMPROD].[dbo].[ItemMasters] i JOIN [CRMPROD].[dbo].[ItemCategories] c ON c.item_id = i.item_id WHERE c.segment1 = 'Performance Chemicals')",
     # ~68k of 169k
     "BiPoDetails": "[inventory_item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
+    # goods receipts, same scope as the purchase orders they answer. ~311k of 836k
+    "BiGrnDetails": "[inventory_item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
     # ~225k of 324k
     "ItemInventoryOrgMappings": "[item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
     # no item id on the stock table, filter by item code. ~31% of each day. 2024 on = ~7.5M rows
@@ -454,6 +456,19 @@ STAGE_FIXES = {
         '''UPDATE stage SET inv_org_id = -1
             WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.inv_org_id)''',
     ],
+    "BiGrnDetails": [
+        # every one matches 100% today. safety nets so a new warehouse, vendor or customer never fails the load
+        '''UPDATE stage SET inv_org_id = -1
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.inv_org_id)''',
+        '''UPDATE stage SET from_inv_id = NULL
+            WHERE from_inv_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.from_inv_id)''',
+        '''UPDATE stage SET req_inv_id = NULL
+            WHERE req_inv_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.req_inv_id)''',
+        '''UPDATE stage SET customer_id = NULL
+            WHERE customer_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "CustomerMasters" c WHERE c.customer_id = stage.customer_id)''',
+        '''UPDATE stage SET vendor_id = NULL
+            WHERE vendor_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "ApSuppliers" a WHERE a.vendor_id = stage.vendor_id)''',
+    ],
     "ItemInventoryOrgMappings": [
         # one item (509454) is mapped twice at two warehouses, identical rows. keep the earlier one so (item, warehouse) stays unique
         "DELETE FROM stage a USING stage b WHERE a.item_id = b.item_id AND a.inventory_org_id = b.inventory_org_id AND a.header_id > b.header_id",
@@ -562,12 +577,17 @@ PARENT_CHECK = {
     "BiPoDetails":     [("inventory_item_id", "ItemMasters",           "item_id"),
                         ("vendor_id",         "ApSuppliers",           "vendor_id"),
                         ("inv_org_id",        "InventoryOrgs", "inventory_org_id")],
+    "BiGrnDetails":    [("inventory_item_id", "ItemMasters",           "item_id"),
+                        ("vendor_id",         "ApSuppliers",           "vendor_id"),
+                        ("customer_id",       "CustomerMasters",       "customer_id"),
+                        ("inv_org_id",        "InventoryOrgs", "inventory_org_id")],
     "InventoryOrgs":   [("collector_id",     "Collectors",    "collector_id")],
     "BiStockDetail":   [("inventory_org_id", "InventoryOrgs", "inventory_org_id")],
     "ItemInventoryOrgMappings": [("item_id",          "ItemMasters",   "item_id"),
                                  ("inventory_org_id", "InventoryOrgs", "inventory_org_id")],
     "BiCollectorInventoryOrgMapping": [("collector_id",     "Collectors",    "collector_id"),
                                        ("inventory_org_id", "InventoryOrgs", "inventory_org_id")],
+    "ApSupplierSitesAlls": [("vendor_id", "ApSuppliers", "vendor_id")],
     "PurchaseRequisitionHdrs": [("collector_id",       "Collectors",            "collector_id"),
                                 ("supplier_id",        "ApSuppliers",           "vendor_id"),
                                 ("ship_to_inv_org_id", "InventoryOrgs", "inventory_org_id"),
@@ -632,15 +652,15 @@ PARENT_CHECK = {
 LOAD_LEVELS = [
 #================================================ LEVEL 0 ===========================================================
     ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms",
-     "QuotationStatus", "JourneyCalendars", "JcWeeklyCalendars", "ApSuppliers", "Users", "Roles", "Reasons", "FinancialYears"],   # no parents (Users only points at itself)
+     "QuotationStatus", "JourneyCalendars", "JcWeeklyCalendars", "ApSuppliers", "ApprovalStatus", "Users", "Roles", "Reasons", "FinancialYears"],   # no parents (Users only points at itself)
 
 #================================================ LEVEL 1 ===========================================================
-    ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "InventoryOrgs",
+    ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "InventoryOrgs", "ApSupplierSitesAlls",
      "UserRoles", "UserCollectorMappings", "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings",
      "ArCustomers", "SPBusinessPlanActualSales", "SCBusinessPlanProjections", "TempItemmasters"],   # need level 0 (InventoryOrgs -> Collectors, the user mappings -> Users / Roles / Collectors / CustomerMasters)
 
 #================================================ LEVEL 2 ===========================================================
-    ["CustomerSites", "BiPoDetails", "PurchaseRequisitionHdrs", "BiStockDetail",
+    ["CustomerSites", "BiPoDetails", "BiGrnDetails", "PurchaseRequisitionHdrs", "BiStockDetail",
      "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping", "UserMarketCircleMappings", "tempcustomers", "PcBusinessPlanReopens"],                                                   # need MarketCircles / InventoryOrgs / TempItemmasters. BiStockDetail is large: 4 inner workers
 
 #================================================ LEVEL 3 ===========================================================

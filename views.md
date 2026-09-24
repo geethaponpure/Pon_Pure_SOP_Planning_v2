@@ -11,7 +11,7 @@ Two kinds:
 
 Built views are documented in `views_applied.md` (what each view is, columns, rules, diagrams). This file is only the to-do list.
 
-Status: item_master, customer_master, sales_order_soc, dispatch_master, quotation_master, business_plan done - both parts, the planning-window calendar, the committed (adhoc) book, the plan's history tables and name resolution; see views_applied.md. Next: purchase_master (with BiGrnDetails for observed supplier lead times), then inventory_master and user_and_scope.
+Status: item_master, customer_master, sales_order_soc, dispatch_master, quotation_master, business_plan, purchase_master done - see views_applied.md. purchase_master carries the warehouse and supplier dimensions, the order book, the receipts, the requisitions, and measured lead times for both legs of supply (buying it in, and moving it between our own warehouses). Next: inventory_master, then user_and_scope, then the raw material layer (bom, consumption, cycle time).
 
 ## customer_master - built, see `views_applied.md`
 

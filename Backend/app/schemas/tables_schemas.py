@@ -882,6 +882,32 @@ TABLES_COLUMNS = {
 #-------------------------------------------- Procurement / purchase --------------------------------------------
 
 "purchase_master" : {
+    "ApSupplierSitesAlls": [      # one row per supplier ADDRESS, 43k. the country lives here. upsert, level 1
+        "vendor_site_id",         # pk. BiPoDetails.vendor_site_id points here, 100% match
+        "vendor_id",              # -> ApSuppliers, 100% match
+        "vendor_site_code",
+        "address_line1",
+        "city",
+        "state",
+        "zip",
+        "country",                # two letter code. this is what explains import lead times
+        "country_of_origin_code", # where the goods are made, when it differs from the address
+        "purchasing_site_flag",   # Y = orders can be placed here
+        "pay_site_flag",          # Y = invoices paid here
+        "terms_id",               # -> PaymentTerms, this site's own terms
+        "ship_via_lookup_code",   # carrier
+        "freight_terms_lookup_code",
+        "fob_lookup_code",        # where title passes
+        "inactive_date",
+        "creation_date",
+        "last_update_date",
+    ],
+
+    "ApprovalStatus": [           # the requisition workflow codes, 17 rows. upsert, level 0
+        "header_id",              # the code. PurchaseRequisition*.status_id decode against it
+        "approval_status",        # Awaiting (-1) / First..Tenth Level Approved / Approve (6) / Reject (7) / Referback (8) / RefertoED (9) / Direct Approval (15) / Cancel (16)
+    ],
+
     "ApSuppliers": [              # oracle vendor master, 24k rows, only ~3k ever used. upsert, level 0
         "vendor_id",              # pk. BiPoDetails.vendor_id and PurchaseRequisitionHdrs.supplier_id point here
         "vendor_name",
@@ -923,6 +949,65 @@ TABLES_COLUMNS = {
         "quantity_cancelled",
         "quantity_billed",
         "line_amount",            # pending = greatest(quantity - received - cancelled, 0). 8% are over-received, that is real
+    ],
+
+    "BiGrnDetails": [             # what actually arrived. oracle receipt extract rebuilt nightly. snapshot with our own id, PC only
+                                  # no natural key: a quarter of crm's rows have no receipt id, and a receipt line can be split
+                                  # across rows. always SUM quantity_received in views, never count rows
+        "header_id",              # crm's own id, restarts from 1 every rebuild. never a key, never a watermark
+        "sync_date",              # when crm read oracle
+        "company_id",             # operating unit
+        "company_name",
+        "company_code",
+        "inv_org_id",             # -> InventoryOrgs, the warehouse that received. -1 if not in the master
+        "inv_org_code",
+        "inv_org_name",
+        "receipt_id",             # empty on Miss / Direct rows
+        "receipt_line_id",        # same, and not unique even where present
+        "receipt_num",
+        "receipt_date",           # on internal orders this is the despatch date, so 1 to 3 days early. crm are fixing it
+        "source",                 # VENDOR / INTERNAL ORDER / INVENTORY / CUSTOMER / Miss / Direct - decides which refs are filled
+        "vendor_id",              # -> ApSuppliers, third party supplier. VENDOR rows only
+        "vendor_number",
+        "vendor_name",
+        "vendor_site_id",
+        "vendor_site",
+        "po_header_id",           # VENDOR rows only
+        "po_line_id",             # -> BiPoDetails.po_line_id, soft link. dates the supplier lead time
+        "customer_id",            # -> CustomerMasters, sales returns only
+        "customer_number",
+        "customer_name",
+        "cust_site_use_id",
+        "cust_site_name",
+        "order_header_id",        # returns only. empty on internal orders - that is the gap crm are closing
+        "order_line_id",
+        "from_inv_id",            # -> InventoryOrgs, sub-inventory transfers only
+        "from_inv_code",
+        "from_inv_name",
+        "req_inv_id",             # -> InventoryOrgs, the org that sent it. on every internal order back to 2018
+        "req_inv_code",
+        "req_vendor_name",        # that org's name, e.g. PPC - Malur-KH
+        "line_num",
+        "inventory_item_id",      # -> ItemMasters.item_id, 100% match
+        "item_code",
+        "lot_number",             # the batch. several rows can share one
+        "uom",
+        "quantity_received",
+        "ullage_loss",            # short delivery on a bulk tanker
+        "po_price_in_inr",        # the landed cost build-up, all per unit
+        "ocean_freight_charges",
+        "insurance",
+        "duties_per_unit",
+        "cc",                     # clearing charges
+        "freight_inward",
+        "packing_cost",
+        "labour_cost",
+        "machine_cost",
+        "other_cost",
+        "forex",
+        "lc",                     # letter of credit charges
+        "supplier_discount",
+        "total_cost",             # the landed cost per unit
     ],
 
     "PurchaseRequisitionHdrs": [   # requisitions raised in crm, ~4.5k a year, all PC. snapshot, status moves after creation
@@ -972,8 +1057,11 @@ TABLES_COLUMNS = {
         "eta_stock",
         "pendingreqqty",
         "avgsales",
+        "last3jc_qty",            # crm's own demand baseline: average consumption per cycle over the last 3 cycles
+        "last6jc_qty",            # same over 6 cycles. empty before 2023, and on ~4 of 5 lines since
         "stock_days",             # 359 rows absurd (crm divide by zero), treat > 3650 as no sales
         "lastpoprice",
+        "lastpotermid",           # payment term on the last po for this item, same ids as PurchaseRequisitionHdrs.payment_term_id. 0 = no previous po
         "change_in_price_per",    # 100 when there was no last po
         "PendingOrderCount",
         "itemstatus",             # A / I at request time

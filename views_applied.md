@@ -43,7 +43,7 @@ The views that are built and live. One section per cluster. `views.md` keeps the
   v_item_pto_pts_monthly ───┘
 ```
 
-**Columns**
+**Columns:**
 
 | column | meaning | example |
 | --- | --- | --- |
@@ -64,7 +64,7 @@ The views that are built and live. One section per cluster. `views.md` keeps the
 | `pto_pts_latest_pass` | measured on its own sales (finished goods) or on what it goes into (raw material) | finished goods |
 | `creation_date`, `last_update_date` | from crm | |
 
-**Rules baked in**
+**Rules baked in:**
 
 - `is_active` = `status = 'Active'`, `is_enabled` = `enabled_flag = 'Y'`. crm's own "usable product" = both.
 - `business` spelling cleaned: `Raw  Material` (two spaces) → `Raw Material`, `FOOD INGREDIENTS` → `Food Ingredients`.
@@ -101,7 +101,7 @@ The views that are built and live. One section per cluster. `views.md` keeps the
 | from | `PurchaseRequisitionPtoPts` (monthly since July 2020) |
 | answers | what was the class in month X, and the numbers behind it |
 
-**Columns**
+**Columns:**
 
 | column | meaning | example |
 | --- | --- | --- |
@@ -116,7 +116,7 @@ The views that are built and live. One section per cluster. `views.md` keeps the
 | `top_customer_sale_qty` | quantity taken by the single largest customer | 2,400 |
 | `top_customer_share_pct` | that customer's share | 33.33 |
 
-**How crm decides (1st of every month, trailing 6 months of invoices, PC only, no samples)**
+**How crm decides (1st of every month, trailing 6 months of invoices, PC only, no samples):**
 
 ```text
   customers in 6 months
@@ -227,7 +227,7 @@ SELECT * FROM v_item_pto_pts_monthly WHERE item_id = 4 ORDER BY month_start DESC
 | `collector_id`, `branch_name`, `branch_source` | the branch: the site's own (`site`) if it has one, else the circle's (`circle`) | 1038, CHENNAI - I, site |
 | `is_overseas`, `is_group_company` | branch flags | false, false |
 
-**Rules baked in**
+**Rules baked in:**
 
 - territory belongs to the site: bill-to and ship-to circles agree on almost every order, and the order's branch is the ship-to site's branch.
 - branch = site's own branch first (crm's own customer → branch rule reads this), circle's branch as fallback:
@@ -270,7 +270,7 @@ SELECT * FROM v_item_pto_pts_monthly WHERE item_id = 4 ORDER BY month_start DESC
 | `home_mc_code`, `home_circle_code`, `home_region` | the home circle | che01, CHE, SOUTH |
 | `home_collector_id`, `home_branch_name`, `home_is_overseas` | the home branch | 1038, CHENNAI - I, false |
 
-**Home territory - first rule that matches, latest site on a tie**
+**Home territory - first rule that matches, latest site on a tie:**
 
 ```text
   customer has sites?
@@ -361,7 +361,7 @@ SELECT home_mc_code = oracle_mc_code AS agree, count(*) FROM dim_customer WHERE 
 | `delivery_from_id`, `inventory_org_id`, `delivery_date` | delivery point, warehouse, promised date | |
 | `status_crm` | OPEN or Closed - OPEN only means nobody closed it | OPEN |
 
-**Rules baked in**
+**Rules baked in:**
 
 ```text
   line value
@@ -472,7 +472,7 @@ SELECT order_kind, is_inter_company, count(*), sum(pending_qty) FROM fact_open_o
 | `unit_price`, `has_price`, `line_value` | tax exclusive; `line_value` = qty × price (crm's total_value, reliable here), empty when unpriced | |
 | `tax_percentage`, `packing_cost`, `created_at` | | |
 
-**Rules baked in**
+**Rules baked in:**
 
 ```text
   does this line count as shipped ?
@@ -514,7 +514,7 @@ SELECT order_kind, is_inter_company, count(*), sum(pending_qty) FROM fact_open_o
 | `first_dispatch_date`, `last_dispatch_date` | when it shipped | |
 | `days_vs_requested`, `days_vs_scheduled` | first dispatch minus requested / effective date. > 0 = late | -2 |
 
-**Open, the way crm computes it**
+**Open, the way crm computes it:**
 
 ```text
   order line status = OPEN ?
@@ -613,7 +613,7 @@ SELECT approval_status, reason, count(*) FROM fact_order_cancellation GROUP BY 1
 | `discount_pct`, `discount_value`, `tax_pct` | pricing details | |
 | `delivery_date`, `delivery_from_id`, `inventory_org_id` | the delivery quoted | |
 
-**What a quote is here**
+**What a quote is here:**
 
 ```text
   quote raised ──► Confirmed ──► order raised the same day ──► quote Closed
@@ -684,7 +684,7 @@ dim_plan_product (mat.)
       └─ product NAME → item(s)
 ```
 
-**Two facts that shape everything here**
+**Two facts that shape everything here:**
 
 - crm plans and measures by **product name**, never by item id. Names are matched lower-case and trimmed on both sides.
 - the human plan is a weaker predictor than a naive forecast at cycle grain (see the baselines). The forecast layer is built on actuals history; the plan is a feature and an override, not the engine.
@@ -704,8 +704,8 @@ dim_plan_product (mat.)
 | `jc_start`, `jc_end`, `days`, `year_start`, `year_end` | dates | |
 | `is_current`, `is_completed`, `is_future` | where today falls | |
 | `prev_jc_id`, `next_jc_id`, `same_jc_last_year_id` | the links | |
-| `se_cutoff`, `te_auto_approval`, `bm_cutoff`, `bh_cutoff` | the deadlines that produced this cycle's plan - all of them fall in the *previous* cycle |
-| `handoff_date`, `publish_date` | when the approved plan went to the planners, and when it went to Oracle |
+| `se_cutoff`, `te_auto_approval`, `bm_cutoff`, `bh_cutoff` | the deadlines that produced this cycle's plan - all of them fall in the *previous* cycle | |
+| `handoff_date`, `publish_date` | when the approved plan went to the planners, and when it went to Oracle | |
 
 **How a cycle's plan is made** (CRM, Sep 2026) - the dates above come straight from this:
 
@@ -804,7 +804,7 @@ dim_plan_product (mat.)
 
 - `share` = the item's share of the name at that branch over the last four completed cycles; all-time share as fallback. Shares sum to 1 per name × branch.
 
-### fact_forecast_baseline_item / _name - the accuracy harness  (materialized)
+### fact_forecast_baseline_item / fact_forecast_baseline_name - the accuracy harness  (materialized)
 
 | | |
 | --- | --- |
@@ -898,7 +898,7 @@ v_forecast_accuracy
 (plan vs baseline scoreboard)
 ```
 
-**Three rules baked in**
+**Rules baked in:**
 
 - **status era**: `jcN_status` changed meaning in April 2025. Up to 2024-25 code 4 was the approved plan; from 2025-26 code 5 is, and 4 means waiting. `is_approved` applies the rule; crm's own screens filter `= 5` and cannot show the older years.
 - **approved is not planned**: a header can be approved for a cycle with no quantity in it. `has_plan` (a quantity exists) and `is_approved` (the workflow passed) are separate flags. Use both.
@@ -1034,7 +1034,7 @@ SELECT acc_year, count(*) FILTER (WHERE is_approved) AS approved_cells, count(*)
 FROM fact_plan_jc GROUP BY 1 ORDER BY 1;
 
 -- the current cycle, biggest plans first
-SELECT product_name, branch_name, plan_qty, forecast_h1_qty, crm_prev4_avg_nonzero_qty, plan_vs_avg_pct, open_soc_qty, confirmed_quote_qty, open_lead_qty
+SELECT product_name, branch_name, plan_qty, forecast_h1_qty, crm_prev4_avg_nonzero_qty, plan_vs_avg_pct, open_soc_qty, quote_qty, open_lead_qty
 FROM v_plan_vs_actual WHERE is_current ORDER BY plan_qty DESC LIMIT 20;
 
 -- the scoreboard, last year, all branches
@@ -1091,7 +1091,7 @@ looked like earlier.
 - `PcBusinessPlanReopens` (see `fact_plan_reopen`) and `SCBusinessPlanLogs` (field-level edits, sparse) are mirrored beside them.
 - when a few cycles of snapshots exist, the scoreboard gets a `plan_as_of` method: the plan as it stood when it was handed over.
 
-**Quick checks**
+**Quick checks** (pgAdmin, after `SET search_path TO ponpure_planner;`)
 
 ```sql
 SELECT snapshot_date, snapshot_source, count(*), round(sum(plan_qty)::numeric) FROM plan_snapshot GROUP BY 1, 2 ORDER BY 1;
@@ -1099,4 +1099,216 @@ SELECT snapshot_date, snapshot_source, count(*), round(sum(plan_qty)::numeric) F
 -- the same cycle, then and now
 SELECT s.jc_no, round(sum(s.plan_qty)::numeric) AS then, (SELECT round(sum(plan_qty)::numeric) FROM fact_plan_jc f WHERE f.acc_year = s.acc_year AND f.jc_no = s.jc_no AND f.is_approved) AS now
 FROM plan_snapshot s WHERE s.snapshot_date = '2025-07-17' AND s.acc_year = '2025-2026' AND coalesce(s.is_approved, true) GROUP BY s.acc_year, s.jc_no ORDER BY 1;
+```
+
+
+---
+
+## purchase_master - the supply side  `07_purchase_master.sql`
+
+What we asked for, what we ordered, what turned up, and how long it all took.
+
+```text
+dim_warehouse ───────────────┐
+   stock location            │
+                             ├──► fact_requisition_line
+dim_supplier ────────────────┤      planner's request + stock/price picture
+   who we buy from           │
+dim_supplier_site ───────────┘
+   ...and from WHERE - country is what drives an import lead time
+                                      │
+                                      ▼
+                               fact_po_line
+                                actual Oracle order
+                                      │
+                                      ▼
+                             fact_goods_receipt
+                                  what arrived
+                                      │
+                         ┌────────────┴────────────┐
+                         │                         │
+                  source = VENDOR          source = INTERNAL ORDER
+                         │                         │
+                         ▼                         ▼
+                  supplier supply          fact_internal_transfer
+                  leg                     + BiStockDetail lot arrival
+                         │                         │
+                         └────────────┬────────────┘
+                                      ▼
+                              dim_item_lead_time
+                               actual supply time
+                                      │
+                                      ▼
+                                v_open_po
+                         open supply + overdue status
+```
+
+### dim_warehouse / dim_supplier - the two dimensions
+
+| | |
+| --- | --- |
+| one row per | warehouse · supplier |
+| answers | where does stock sit, who do we buy from |
+
+- `dim_warehouse` covers warehouses, plants and ports. `is_plant`, `is_port`, `is_repack` separate them. Row -1 is the catch-all for a warehouse crm has not got in its master.
+- **do not filter on `is_active`**: two dozen warehouses are switched off and a few still hold stock.
+- `dim_supplier` is mostly *not* suppliers - employees, transporters and tax authorities share the table. Use **`is_goods_supplier`** before counting: it is true for the real vendor types *or* for anyone who has actually raised an order. Both halves are needed - some import vendors sit under the catch-all type `OTHERS`, and most rows with that type never bought anything. **`has_purchase_history`** separates who we *could* buy from and who we *have*.
+- **`is_group_company`** separates our own entities from genuine third parties. Leave them out when judging supplier performance.
+
+### dim_supplier_site - where the supplier actually is
+
+| | |
+| --- | --- |
+| one row per | supplier address |
+| answers | which country an order comes from |
+
+- a supplier can have several addresses - a factory, a sales office, a pay-to address - and every order line names one. Every line resolves.
+- this is where **country** lives, and country explains an import lead time far better than the procurement type does. An order from Spain and one from the United States are both "import" and weeks apart.
+- `country_of_origin_code` is where the goods are made, when that differs from the address.
+
+### fact_po_line - what we committed to buy
+
+| | |
+| --- | --- |
+| one row per | purchase order line |
+| join on | `item_id` · `supplier_id` · `warehouse_id` |
+| answers | what is on order, what is still pending, what it cost |
+
+- crm rebuilds the source nightly, so this is the order book **as it stands today**, not history. A line cancelled yesterday looks cancelled in every past cycle too.
+- `procurement_type` is normalised to domestic / import / market / packing. crm spells "Domestic Procurement" three different ways; the original is kept beside it.
+- the key is **`(po_line_id, warehouse_id)`**. A po line repeats only where a shipment was **redirected** to a second warehouse.
+- **two traps worth knowing:**
+
+| trap | what happens | what to use |
+| --- | --- | --- |
+| a fully cancelled line | oracle **zeroes** the quantity and moves the original into cancelled, so `ordered_qty` reads 0 | **`original_qty`** / `original_value`, and `is_cancelled` |
+| a redirected shipment | two rows share one order quantity, but only one of them received | **`pending_qty`** sits on the primary copy only, worked out from `received_all_copies`. Sum it freely |
+
+
+### fact_goods_receipt - what actually turned up
+
+| | |
+| --- | --- |
+| one row per | receipt row |
+| answers | what arrived, where, from whom, and at what landed cost |
+
+- **there is no natural key.** A quarter of crm's rows carry no receipt id at all, and one delivery put away in pieces becomes several rows. **Always SUM the quantity; never count rows to mean deliveries.**
+- `receipt_source` decides which columns are filled: only **VENDOR** rows carry a purchase order, only **INTERNAL ORDER** rows carry a sending warehouse, only **CUSTOMER** rows are returns.
+- **`adds_stock`** separates real supply from shuffling. A sub-inventory move (`INVENTORY`) only shifts stock inside one warehouse - about one row in eight. Anything summing receipts as supply must filter on it or it double counts.
+- **`receipt_date` is not the arrival on a transfer.** On an internal order crm writes the *despatch* date. That is a gift, not a defect - it gives us the start of every transfer for free.
+- the landed cost is split three ways: base price, import costs (freight, insurance, duty, clearing) and handling.
+
+### fact_requisition_line - what the planner asked for, and what they could see
+
+| | |
+| --- | --- |
+| one row per | item on a requisition |
+| answers | what was requested, by whom, against what evidence |
+
+- the valuable part is the **context frozen at the moment of asking**: stock on hand, stock already on the water, average sales, days of cover, the last price paid, the last payment terms. This is history and must never be refreshed.
+- `last_3_cycle_qty` / `last_6_cycle_qty` are crm's own demand baseline. Present only from 2023 and only on about one domestic or import line in five - a benchmark where it exists, not a series.
+- `payment_term_changed` flags a line bought on different terms from last time. Terms drift quietly.
+- `payment_due_days` is **read off the term name**, because crm publishes no master for these term ids - its own payment terms table uses a different id space and matches none of them. `payment_basis` says what the days count from: the term date, the shipping document, immediate, or advance. Two sixty-day terms are not the same money if one counts from shipment.
+- status is decoded against **crm's own `ApprovalStatus` master**: approve, reject, referback, awaiting, refertoED, direct approval, cancel, and ten numbered approval levels.
+- two codes crm writes are **not in its own master**: `0`, which its screens treat as an unfinished draft, and `-2`, which shows as `unknown` rather than being guessed at.
+
+### fact_internal_transfer - the branch lane, rebuilt without crm's help
+
+| | |
+| --- | --- |
+| one row per | stock movement between our own warehouses |
+| answers | how long does stock take to get from one warehouse to another |
+
+We asked the crm team to add the internal order reference to the receipt feed. They said it cannot be done. It turned out not to matter:
+
+```text
+  despatch          crm already writes it - it is the "receipt_date" on an internal order row
+       │
+       │   the same lot number turns up in the stock table at the receiving warehouse
+       ▼
+  arrival           the first day it is seen there, on or after it left
+       =
+  transit days
+```
+
+- **filter on `is_measured` before averaging.** An unmeasured row has no arrival, not a zero.
+- **the destination must not already hold the lot.** If it does - an earlier tranche, or a supplier batch number several warehouses share - then the first sighting afterwards is the stock that was already there, not an arrival. About one movement in five, and they would otherwise all read as same-day and drag the medians down. `lot_pre_existed` marks them.
+- three reasons a movement is not measured, and they account for every row: the lot was already there (`lot_pre_existed`), the lot never turned up at all (`lot_was_found` false - a blank lot, or stock consumed between two snapshots), or it took over sixty days.
+- the port lanes are the control group: import lot numbers are unique, so their medians barely move under this rule. The branch lanes move by a day, which is the size of the bias.
+- the stock table only starts in 2024 and is daily only from late that year, so `has_stock_history` is false for older movements and earlier transit times are rough.
+- a lot sitting in quality hold counts as arrived. For "when could the branch sell it" that is arguably right, but it does fold any hold into transit.
+
+**What is still missing:** when the branch *originally asked*. crm's requisition date on the despatch is raised at shipping time, so it is not the request. That one number lives only in the PO receipts spreadsheet.
+
+### v_transfer_lane - how long each lane takes
+
+| | |
+| --- | --- |
+| one row per | sending warehouse → receiving warehouse |
+| answers | plan with the median, buffer with the p90 |
+
+- lanes built on a handful of movements are noise. Check `movements` before trusting a number.
+
+### dim_item_lead_time - how long supply really takes
+
+| | |
+| --- | --- |
+| one row per | item with at least one measurement |
+| answers | if I order this today, when can I sell it |
+
+- measured from **what happened**, not from a lead time somebody typed in.
+- two legs kept apart: **supplier** (order placed → first delivery) and **transfer** (warehouse → warehouse). `total_days` adds them.
+- where a leg was never measured it counts as zero in the total, so read it next to the observation counts.
+- **`supplier_days` is the number to plan with.** It falls back in three steps, and `supplier_days_source` always says which was used:
+
+```text
+  the item's own history    3 or more measured orders of this item
+        ↓ too few
+  its country               everything bought the same way from the same country   ← does most of the work
+        ↓ nothing there
+  its procurement type      domestic / import / market / packing
+```
+
+- the middle step matters most on imports, where **half** the items have too little history of their own. Country medians run from about three weeks to eleven, against a single pooled "import" figure.
+- `supplier_days_median` and `supplier_leg_is_reliable` are still there for anyone who wants the item's own raw history.
+- note **market procurement is effectively historic**: the performance chemicals filter leaves barely any market lines after early 2024, so those rows describe the past.
+
+### v_lead_time_by_country - the fallback tier, on its own
+
+| | |
+| --- | --- |
+| one row per | procurement type × country with at least thirty measured orders |
+| answers | how long does buying this way, from there, usually take |
+
+- worth reading directly, not only as a fallback: it is the clearest picture of which sources are slow.
+
+### v_open_po - what is still on the water
+
+| | |
+| --- | --- |
+| one row per | order line with stock still to come |
+| answers | what is coming, and is it late |
+
+- lateness is judged against **measured history**, not a stated lead time.
+- every live line carries an **`expected_on`** date and the **cycle** it should land in (`expected_jc_id`). That is what lets supply be lined up against the plan - the plan is measured by cycle, so supply has to be too.
+- an item we have never received before still gets a date: the country comes from that very order. Only a couple of lines in the whole book end up with no basis at all.
+- `is_partly_received` marks a split delivery still running.
+- **most of what crm shows as pending is not coming.** Four open lines in five were ordered over a year ago and were never received and never cancelled. `is_abandoned` and the `abandoned` status keep them apart - exclude them before showing a planner a pending value.
+- a plain view, not materialized: the open book changes daily and must never be stale.
+
+**Quick checks** (pgAdmin, after `SET search_path TO ponpure_planner;`)
+
+```sql
+-- how long each lane takes
+SELECT from_warehouse_name, to_warehouse_name, movements, transit_days_median, transit_days_p90
+FROM v_transfer_lane WHERE movements >= 200 ORDER BY movements DESC;
+
+-- lead time by the way we buy
+SELECT procurement_type, count(*) AS items,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY supplier_days_median) AS typical_days
+FROM dim_item_lead_time WHERE supplier_leg_is_reliable GROUP BY 1 ORDER BY 2;
+
+-- the live order book, with the dead orders left out
+SELECT delivery_status, count(*), round(sum(pending_value)::numeric)
+FROM v_open_po WHERE NOT is_abandoned GROUP BY 1 ORDER BY 2 DESC;
 ```

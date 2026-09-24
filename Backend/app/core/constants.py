@@ -72,10 +72,13 @@ CRM_TABLES = {
 
 # ────────────────────────────── Procurement / purchase ────────────────────────────────────────────
     "purchase_master": [
-        "BiPoDetails",                      
+        "BiPoDetails",
+        "BiGrnDetails",                      
         "PurchaseRequisitionHdrs",          
         "PurchaseRequisitionDtls",
-        "ApSuppliers"                       
+        "ApSuppliers",
+        "ApprovalStatus",
+        "ApSupplierSitesAlls"               
     ],
 
 # ────────────────────────────── Inventory / stock ─────────────────────────────────────────────────

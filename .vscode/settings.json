@@ -8,5 +8,9 @@
         "Backend"
     ],
     "python.analysis.autoSearchPaths": true,
-    "python.analysis.typeCheckingMode": "basic"
+    "python.analysis.typeCheckingMode": "basic",
+    "markdownlint.config": {
+        "default": true,
+        "MD013": false
+    }
 }

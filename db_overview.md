@@ -1,6 +1,6 @@
 # Database overview
 
-Our planning database is a copy of the CRM data that the planning tool needs, refreshed from the CRM automatically. It holds 38 tables grouped into 9 areas. The master lists (products, customers, warehouses, people) are copied in full. The large history tables are limited to the Performance Chemicals business - order lines and the open order book for PC products, dispatches and quotations from 2021, stock from 2024.
+Our planning database is a copy of the CRM data that the planning tool needs, refreshed from the CRM automatically. It holds 49 CRM tables grouped into 9 areas (plus 4 planning history tables). The master lists (products, customers, warehouses, people) are copied in full. The large history tables are limited to the Performance Chemicals business - order lines and the open order book for PC products, dispatches and quotations from 2021, stock from 2024.
 
 This page explains, in plain words, what each area and each table contains. The technical detail (how the tables connect, known data quirks) is in `relationship.md`.
 
@@ -14,9 +14,9 @@ The products, how they are classified, and whether we buy them against an order 
 - **ItemCategories** - the classification of each product: division, business, category, family.
 - **PurchaseRequisitionPtoPts** - whether a product is purchase-to-order or purchase-to-stock, month by month.
 
-    - PTO (Purchase To Order): few customers buy most of the product → purchase when ordered.
-    - PTS (Purchase To Stock): many customers buy it → keep it in stock.
-    - Because this answers “should we stock this product?”
+  - PTO (Purchase To Order): few customers buy most of the product → purchase when ordered.
+  - PTS (Purchase To Stock): many customers buy it → keep it in stock.
+  - Because this answers “should we stock this product?”
 
 ## 2. customer_master - who we sell to, and who looks after them
 
@@ -65,6 +65,9 @@ The monthly plan the branches fill in for their customers, cycle by cycle. A JC 
 - **SCBusinessMonthlyPlanJCDtls** - the forecast entered in each cycle for the coming months.
 - **JourneyCalendars** - the cycle calendar: start and end date of every JC.
 - **JcWeeklyCalendars** - the four weeks inside every cycle. The planning deadlines are set on these weeks.
+- **BiGrnDetails** - everything that arrived at a warehouse: bought in, sent from another of our warehouses, returned by a customer, or a manual correction. Carries the landed cost and the batch number.
+- **ApprovalStatus** - the short list of codes a purchase requisition moves through, from waiting to approved, rejected or sent back.
+- **ApSupplierSitesAlls** - every address we buy from. A supplier can have several, and this is where the country is recorded.
 - **SPBusinessPlanActualSales** - what was actually sold per cycle, as CRM computes it from invoices, by branch, customer and product name.
 - **SCBusinessPlanProjections** - the approved sales projection per branch and product for each cycle (the numbers sent to Oracle).
 - **SCLeadTargets** - the lead plan: what a branch expects to sell to a lead (a customer not yet won), per product and cycle.
