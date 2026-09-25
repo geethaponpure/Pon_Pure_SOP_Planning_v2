@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 from .core.config import settings
 from sqlalchemy import text
 from .api.v1.ingest_api import user_router
+from .ingest.templates import write_templates
 
 
 
@@ -42,6 +43,9 @@ async def lifespan(app:FastAPI):
         await conn.run_sync(Base.metadata.create_all)
 
         await create_views(conn)
+
+    # the downloadable excel templates, created from the specs when missing (existing ones are kept)
+    write_templates()
 
     yield
 

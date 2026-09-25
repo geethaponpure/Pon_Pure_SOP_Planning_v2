@@ -11,3 +11,6 @@ wheels/
 
 # Environment File
 .env
+
+# Uploaded Excel files (saved by the upload API)
+Backend/uploads/

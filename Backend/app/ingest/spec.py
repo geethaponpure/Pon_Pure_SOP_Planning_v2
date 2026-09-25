@@ -18,7 +18,9 @@ class Col:
     date_format: str | tuple[str, ...] | None = None   # Text date format(s), tried in order
     required: bool = False                  # NULL not allowed     
     rule: str | None = None                 # Validation rule       
-    null_values: tuple[str, ...] = ()       # Extra NULL values    
+    null_values: tuple[str, ...] = ()       # Extra NULL values
+    help: str = ""                          # What to enter, in plain words (template guidelines)
+    example: object = None                  # One example value (template guidelines)
 
 
 
@@ -39,3 +41,4 @@ class FileSpec:
     upload_params: tuple[str, ...] = ()      # Extra upload fields
     dedupe_exact: bool = False               # Remove exact duplicates
     model_sql: tuple[str, ...] = ()          # SQL models to run after load
+    notes: tuple[str, ...] = ()              # File-specific tips for the template guidelines sheet
