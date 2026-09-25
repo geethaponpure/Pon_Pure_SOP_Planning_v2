@@ -8,11 +8,11 @@ from app.ingest.spec import Col, FileSpec
 BOM_EXTRACT = FileSpec(
     key="bom_extract",
     label="BOM Extract",
-    reader="xlsx",
     sheet="Output",
     header_row=1,
     mode="replace",
     raw_table="raw_bom_extract",
+    model_sql=("08_ingest_models.sql",),          # views over this table; plain views, nothing to refresh
     dedupe_exact=True,                            # 3 identical lines in the extract: the query groups by
                                                   # substitute_component_id, which is not in the output
     columns=(

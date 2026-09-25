@@ -16,11 +16,13 @@ from .models.purchase_master import (ApprovalStatus, ApTermsTls, ApSuppliers, Ap
 from .models.inventory_master import BiStockDetail, InventoryOrgs, ItemInventoryOrgMappings, BiCollectorInventoryOrgMapping
 from .models.user_and_scope import (Users, Roles, UserRoles, UserMarketCircleMappings, UserCollectorMappings,
                                     UserCustomerMappings, CollectorMailMappings, TechnicalUserSegmentMappings)
+from .models.manufacturing import BIRawMaterialConsumptions
 from .models.ingest import IngestFiles, IngestRejects, RAW_MODELS
 from .repositories.views import create_views
 from contextlib import asynccontextmanager
 from .core.config import settings
 from sqlalchemy import text
+from .api.v1.ingest_api import user_router
 
 
 
@@ -49,3 +51,5 @@ async def lifespan(app:FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+app.include_router(user_router)

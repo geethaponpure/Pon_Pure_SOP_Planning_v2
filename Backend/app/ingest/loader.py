@@ -63,7 +63,9 @@ def register_file(conn, spec: FileSpec, path, uploaded_by: str, original_name: s
         raise UploadError(f"{spec.key} does not take {', '.join(unknown)}")
 
     period_key = (period_key or "").strip() or None
-    if spec.mode == "append" and not period_key:
+    if spec.scope_column and period_key:
+        raise UploadError(f"{spec.key} takes its {spec.scope_column} from the file, not from period_key")
+    if spec.mode == "append" and not period_key and not spec.scope_column:
         raise UploadError(f"{spec.key} is loaded per period, period_key is required")
     if spec.mode == "replace" and period_key:
         raise UploadError(f"{spec.key} replaces the whole file, it takes no period_key")
@@ -169,6 +171,14 @@ def write_rejects(cur, file_id: int, rejects: list[dict]) -> int:
           None if r["value"] is None else str(r["value"]), Json(r["row"])) for r in kept],
         page_size=5000)
     return len(kept)
+
+
+
+def set_scope(cur, file_id: int, value: str) -> None:
+    """Record the file's scope (e.g. its plant, read from the rows) as its period_key, so
+    switch_current replaces only the earlier file of the same scope. No commit."""
+
+    cur.execute("UPDATE ingest_files SET period_key = %s WHERE file_id = %s", (value, file_id))
 
 
 

@@ -31,7 +31,8 @@ SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules",
                    "UserRoles", "UserMarketCircleMappings", "UserCollectorMappings",
                    "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings",
                    "tempcustomers", "SPBusinessPlanActualSales", "SCBusinessPlanProjections", "PcBusinessPlanReopens", "SCBusinessPlanLogs",
-                   "SCLeadTargets", "SCLeadTargetJcDtls", "LeadDetails", "LeadProducts"}
+                   "SCLeadTargets", "SCLeadTargetJcDtls", "LeadDetails", "LeadProducts",
+                   "BIRawMaterialConsumptions"}
 
 
 
@@ -76,6 +77,12 @@ SOURCE_FILTERS = {
     "QuotationDtls": "[creation_date] >= '2021-01-01' AND [item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
     # only the headers those lines point at, so the fk always holds. ~225k of 1.19M
     "QuotationHdrs": "[header_id] IN (SELECT header_id FROM [CRMPROD].[dbo].[QuotationDtls] WHERE [creation_date] >= '2021-01-01' AND [item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals'))",
+    # the latest weekly run only (~0.3M of ~49M rows). run_id grows with every run and a run is one unbroken block,
+    # so seek the top 2M ids on the clustered key and keep the run of the highest id: 2s instead of a 40s scan.
+    # 2M is ~6 runs of headroom; if a run ever grows past it, raise the number
+    "BIRawMaterialConsumptions": "[Run_Id] > (SELECT MAX([Run_Id]) FROM [CRMPROD].[dbo].[BIRawMaterialConsumptions]) - 2000000 "
+                                 "AND [Creation_Date] = (SELECT [Creation_Date] FROM [CRMPROD].[dbo].[BIRawMaterialConsumptions] "
+                                 "WHERE [Run_Id] = (SELECT MAX([Run_Id]) FROM [CRMPROD].[dbo].[BIRawMaterialConsumptions]))",
 }
 
 
@@ -652,7 +659,8 @@ PARENT_CHECK = {
 LOAD_LEVELS = [
 #================================================ LEVEL 0 ===========================================================
     ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms",
-     "QuotationStatus", "JourneyCalendars", "JcWeeklyCalendars", "ApSuppliers", "ApprovalStatus", "ApTermsTls", "Users", "Roles", "Reasons", "FinancialYears"],   # no parents (Users only points at itself)
+     "QuotationStatus", "JourneyCalendars", "JcWeeklyCalendars", "ApSuppliers", "ApprovalStatus", "ApTermsTls", "Users", "Roles", "Reasons", "FinancialYears",
+     "BIRawMaterialConsumptions"],   # no parents (Users only points at itself; the consumption feed carries codes, not ids)
 
 #================================================ LEVEL 1 ===========================================================
     ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "InventoryOrgs", "ApSupplierSitesAlls",

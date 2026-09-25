@@ -23,17 +23,12 @@ def normalise(name) -> str:
 
 
 
-def sniff_format(path) -> str:
-    """xlsx, html or unknown, by the first bytes. The Oracle .xls exports are html inside."""
+def is_xlsx(path) -> bool:
+    """By the first bytes, not the name: an xlsx is a zip file (PK). An old .xls, a csv, or an
+    Oracle export renamed to .xlsx is not."""
 
     with open(path, "rb") as f:
-        head = f.read(512).lstrip()
-
-    if head.startswith(b"PK"):
-        return "xlsx"
-    if head[:5].lower() == b"<html":
-        return "html"
-    return "unknown"
+        return f.read(2) == b"PK"
 
 
 
@@ -100,6 +95,12 @@ def _read_sheet(fh, sheet, header_row, expected) -> pd.DataFrame:
         else:
             raise ReadError(f"sheet {sheet!r} not found, workbook has {wb.sheetnames}")
 
+        merged, unsaved = _scan_sheet_xml(wb, ws)
+        if unsaved:
+            raise ReadError("the formulas in this file have no saved results, so their cells read as blank. "
+                            "This happens when a file was last saved by a script instead of Excel. "
+                            "Open it in Excel, press Save, and upload it again.")
+
         ws.reset_dimensions()                     # some exports carry a wrong dimension tag, read all rows
         rows = ws.iter_rows(values_only=True)
 
@@ -117,7 +118,7 @@ def _read_sheet(fh, sheet, header_row, expected) -> pd.DataFrame:
         width = len(names)
 
         data = [tuple(r[:width]) + (None,) * (width - len(r)) for r in _chain(body, rows)]
-        _fill_merged(data, _merged_ranges(wb, ws), body_start, width)
+        _fill_merged(data, merged, body_start, width)
     finally:
         wb.close()                                # read-only mode keeps the file open until closed
 
@@ -128,23 +129,27 @@ def _read_sheet(fh, sheet, header_row, expected) -> pd.DataFrame:
 
 
 _MERGE_REF = re.compile(rb'<mergeCell ref="([A-Z]+[0-9]+:[A-Z]+[0-9]+)"')
+# a formula with no saved result: <f>SUM(..)</f><v /> or </f></c>. excel always stores the result;
+# a file last saved by a script (openpyxl, pandas) does not, and every formula cell then reads as blank
+_UNSAVED_FORMULA = re.compile(rb'(?:</f>|<f[^>]*/>)\s*(?:<v\s*/>|<v></v>|</c>)')
 
 
-def _merged_ranges(wb, ws) -> list[tuple[int, int, int, int]]:
+def _scan_sheet_xml(wb, ws) -> tuple[list[tuple[int, int, int, int]], bool]:
     """
-    Merged ranges as (min_col, min_row, max_col, max_row). Read-only worksheets do not expose
-    merges, so the sheet xml is scanned for <mergeCell> in chunks (they sit after the data).
+    One pass over the sheet xml, in chunks. Returns the merged ranges as (min_col, min_row, max_col,
+    max_row) - read-only worksheets do not expose merges - and whether any formula has no saved result.
     """
 
     path = getattr(ws, "_worksheet_path", None)
     archive = getattr(wb, "_archive", None)
     if path is None or archive is None:           # openpyxl internals moved, read without merges
-        return []
+        return [], False
 
-    refs, tail = [], b""
+    refs, tail, unsaved = [], b"", False
     with archive.open(path) as f:
         while chunk := f.read(1 << 20):
             buf = tail + chunk
+            unsaved = unsaved or _UNSAVED_FORMULA.search(buf) is not None
             refs.extend(m.group(1).decode() for m in _MERGE_REF.finditer(buf))
             cut = buf.rfind(b"<")                 # carry a possibly split tag into the next chunk
             tail = buf[cut:] if cut != -1 else b""
@@ -156,7 +161,7 @@ def _merged_ranges(wb, ws) -> list[tuple[int, int, int, int]]:
         min_col, min_row, max_col, max_row = range_boundaries(ref)
         if min_col and min_row and max_col and max_row:   # always set for A1:B2 refs; the stub
             ranges.append((min_col, min_row, max_col, max_row))   # allows None for A:A / 1:1
-    return ranges
+    return ranges, unsaved
 
 
 
@@ -186,13 +191,9 @@ def read_file(path, spec: FileSpec) -> pd.DataFrame:
     """Entry point for the runner. Only xlsx is accepted."""
 
     path = Path(path)
-    fmt = sniff_format(path)
-
-    if fmt == "html":
-        raise ReadError(f"{path.name} is an Oracle HTML export saved as .xls, not a real Excel file. "
-                        "Open it in Excel, Save As .xlsx and upload that.")
-    if fmt != "xlsx":
-        raise ReadError(f"{path.name} is not an .xlsx file")
+    if not is_xlsx(path):
+        raise ReadError(f"{path.name} is not an .xlsx file. Open it in Excel, Save As "
+                        "Excel Workbook (.xlsx) and upload that.")
 
     expected = [c.source for c in spec.columns if c.required]
     return read_xlsx(path, spec.sheet, spec.header_row, expected)

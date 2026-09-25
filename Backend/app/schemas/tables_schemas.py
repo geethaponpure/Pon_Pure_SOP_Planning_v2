@@ -1267,4 +1267,39 @@ TABLES_COLUMNS = {
     ],
 },
 
+
+#-------------------------------------------- Manufacturing -------------------------------------------
+
+"manufacturing" : {
+    "BIRawMaterialConsumptions": [   # oracle mfg consumption report, rebuilt weekly in crm with every run kept.
+                                     # snapshot of the latest run only (SOURCE_FILTERS), all segments. level 0
+                                     # one row per job x output lot x raw material: dedupe before summing
+        "Run_Id",                 # pk, grows with every run. the latest run is one block at the top
+        "Creation_Date",          # the run. one value per load
+        "SyncDate",
+        "Mfg_Item_Code",          # what the job made. at psm often the packed item itself
+        "Item_Description",
+        "Item_Group",
+        "Item_Category",          # oracle segment1 (Performance Chemicals / NPD / General Chemicals ...)
+        "Product_Group",
+        "Product_Category",
+        "Product_Sub_Category",
+        "Uom",
+        "Output_Quantity",        # per output lot, negative on reversals. repeats per raw material
+        "Job_Number",
+        "Stock_Age",              # job completion date
+        "Subinventory_Code",
+        "Lot_Number",             # output lot
+        "Inventory_Org_Code",     # the plant, e.g. 753 -> InventoryOrgs.inventory_org_code (text, no fk)
+        "Inventory_Org_Name",
+        "Company_Code",
+        "Rw_Item_Code",           # raw material consumed
+        "Item_Description_R",
+        "Uom_R",
+        "Qty_Consumed",           # repeats per output lot
+        "Rate_Per_Unit",
+        "Value_Of_Raw_Material",
+    ],
+},
+
 }

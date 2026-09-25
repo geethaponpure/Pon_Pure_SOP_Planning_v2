@@ -6,11 +6,11 @@ from app.ingest.spec import Col, FileSpec
 SHELF_LIFE = FileSpec(
     key="shelf_life",
     label="FG Shelf Life (QMS)",
-    reader="xlsx",
     sheet="Sheet1",
     header_row=1,
     mode="replace",
     raw_table="raw_shelf_life",
+    model_sql=("08_ingest_models.sql",),          # views over this table; plain views, nothing to refresh
     columns=(
         Col("Itemcode", "item_code", required=True),
         Col("Desc", "item_desc"),

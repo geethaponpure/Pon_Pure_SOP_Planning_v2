@@ -87,7 +87,12 @@ CRM_TABLES = {
         "InventoryOrgs",                    
         "BiStockDetail",
         "ItemInventoryOrgMappings",         
-        "BiCollectorInventoryOrgMapping"    
+        "BiCollectorInventoryOrgMapping"
+    ],
+
+# ────────────────────────────── Manufacturing ─────────────────────────────────────────────────────
+    "manufacturing": [
+        "BIRawMaterialConsumptions",        # latest weekly run only: what each job made and consumed
     ],
 
 # ────────────────────────────── Users, roles & data-scope mappings ────────────────────────────────

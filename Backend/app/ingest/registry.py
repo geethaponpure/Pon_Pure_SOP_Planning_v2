@@ -6,16 +6,19 @@ from app.ingest.spec import FileSpec
 from app.ingest.validate import parse_rule
 from app.ingest.specs.bom_extract import BOM_EXTRACT
 from app.ingest.specs.shelf_life import SHELF_LIFE
+from app.ingest.specs.cycle_time import CYCLE_TIME
 
 
 # the only list of supported file types. the api "types" endpoint reads this dict.
-# cycle_time, rm_consumption and po_receipts get added here once their specs are written.
+# only data crm does not have comes in by upload: rm consumption and po receipts are read
+# from crm (BIRawMaterialConsumptions, BiGrnDetails + BiPoDetails), not from excel.
 
 FILE_SPECS: dict[str, FileSpec] = {
     spec.key: spec
     for spec in (
         BOM_EXTRACT,
         SHELF_LIFE,
+        CYCLE_TIME,
     )
 }
 
@@ -47,6 +50,13 @@ def _check(spec: FileSpec) -> None:
             _, kind = parse_rule(c.rule)          # raises on bad syntax
             if kind == "number" and c.dtype not in ("int", "float"):
                 raise ValueError(f"{spec.key}: numeric rule {c.rule!r} on {c.dtype} column {c.target}")
+
+    if spec.scope_column:
+        col = next((c for c in spec.columns if c.target == spec.scope_column), None)
+        if spec.mode != "append" or col is None or not col.required:
+            raise ValueError(f"{spec.key}: scope_column must be a required column of an append-mode spec")
+        if spec.upload_params:
+            raise ValueError(f"{spec.key}: the scope comes from the file, not from upload_params")
 
     if not _SNAKE.match(spec.raw_table):
         raise ValueError(f"{spec.key}: bad raw_table {spec.raw_table!r}")

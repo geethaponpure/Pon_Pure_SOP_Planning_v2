@@ -7,7 +7,8 @@
 #              rejected       failed     failed        (step says where)
 #
 # the api calls run_ingest through BackgroundTasks after register_file; the cli below does both:
-#   python -m app.ingest.runner --type bom_extract --by <user> [--period 2026-2027/JC1] [--plant ...] <path>
+#   python -m app.ingest.runner --type bom_extract --by <user> [--period ...] <path>
+# cycle_time takes its plant from the Plant column; an upload replaces only that plant's sheet.
 
 import argparse
 import sys
@@ -17,7 +18,7 @@ from pathlib import Path
 from app.core.database import get_postgres_cursor
 from app.ingest.excel_reader import ReadError, read_file
 from app.ingest.loader import (DuplicateFileError, UploadError, load_raw, register_file,
-                               set_status, switch_current, write_rejects)
+                               set_scope, set_status, switch_current, write_rejects)
 from app.ingest.registry import FILE_SPECS, get_spec
 from app.ingest.spec import FileSpec
 from app.ingest.validate import summarize_rejects, validate
@@ -77,11 +78,24 @@ def run_ingest(file_id: int, path) -> dict:
                        rows_rejected=result.rows_rejected, **counts)       # commits the rejects too
             return _final(cur, file_id)
 
-        # ---- load: rows + current switch + status in one commit
+        # one file = one plant (or whatever the spec scopes by)
+        scope = None
+        if spec.scope_column:
+            values = sorted({str(v) for v in result.clean[spec.scope_column]})
+            if len(values) != 1:
+                set_status(conn, file_id, "failed", step,
+                           f"one {spec.scope_column} per file, this file has {len(values)}: {', '.join(values)}",
+                           **counts)
+                return _final(cur, file_id)
+            scope = values[0]
+
+        # ---- load: rows + scope + current switch + status in one commit
         step = "loading"
         set_status(conn, file_id, "loading", None, None, rows_rejected=0, **counts)
         t = time.time()
         loaded = load_raw(cur, spec, file_id, result.clean)
+        if scope is not None:
+            set_scope(cur, file_id, scope)
         previous = switch_current(cur, spec, file_id)
         set_status(conn, file_id, "modeling", rows_loaded=loaded)            # commits the load
         print(f"ingest {file_id} {file_type}: loaded {loaded} rows into {spec.raw_table} in {time.time() - t:.1f}s"

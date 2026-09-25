@@ -9,7 +9,7 @@ import math
 import operator
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 import pandas as pd
 from openpyxl.utils.datetime import from_excel
@@ -25,7 +25,8 @@ class ValidationResult:
     rejects: list[dict]                           # one per bad cell: row_no, column, reason, value, row
     structural_errors: list[str]                  # the file itself is wrong (missing column, no rows)
     rows_read: int = 0
-    duplicates_dropped: int = 0                   # identical rows removed by dedupe_exact
+    duplicates_dropped: int = 0                   # repeats removed: identical rows (dedupe_exact) and
+                                                  # rows a fuller row with the same key already covers
     rows_rejected: int = 0                        # distinct rows with at least one problem
     ignored_columns: list[str] = field(default_factory=list)   # source headers no spec column uses
 
@@ -105,6 +106,9 @@ def _to_str(v) -> str:
         return v.isoformat(sep=" ")
     if isinstance(v, (date, time)):
         return v.isoformat()                      # time(4, 0) -> '04:00:00'
+    if isinstance(v, timedelta):                  # a duration cell (1:30:00) -> '01:30:00', like a time
+        minutes, seconds = divmod(int(v.total_seconds()), 60)
+        return f"{minutes // 60:02d}:{minutes % 60:02d}:{seconds:02d}"
     return str(v)
 
 
@@ -291,12 +295,31 @@ def validate(df: pd.DataFrame, spec: FileSpec) -> ValidationResult:
     clean = pd.DataFrame(clean_cols, index=raw.index, dtype=object)
     clean = clean.loc[~clean.index.isin(list(bad_rows))]
 
-    # row identity: a later row with the same key is a duplicate. null counts as ''.
+    # row identity: rows sharing a key (null counts as '') describe the same thing.
+    #   one row holds everything the others hold, plus more -> keep that fullest row, drop the rest
+    #   they disagree on a value both of them have          -> real conflict, rejected as duplicate
     key = clean.loc[:, list(spec.row_key)].map(lambda v: "" if v is None else v)
-    dup = key.duplicated(keep="first")
-    for row_no in clean.index[dup.to_numpy()].tolist():
-        bad_rows[row_no] = [(",".join(spec.row_key), "duplicate", None)]
-    clean = clean.loc[~dup]
+    groups: dict[tuple, list[int]] = {}
+    for row_no, k in zip(clean.index.tolist(), key.itertuples(index=False, name=None)):
+        groups.setdefault(k, []).append(row_no)
+
+    drop = []
+    for rows in groups.values():
+        if len(rows) == 1:
+            continue
+        values = dict(zip(rows, clean.loc[rows].to_numpy().tolist()))
+        fullest = max(rows, key=lambda r: sum(v is not None for v in values[r]))   # first one on a tie
+        others = [r for r in rows if r != fullest]
+        if all(_covered(values[r], values[fullest]) for r in others):
+            drop += others
+            result.duplicates_dropped += len(others)
+        else:
+            for r in rows[1:]:
+                bad_rows[r] = [(",".join(spec.row_key),
+                                f"duplicate: same {', '.join(spec.row_key)} as row {rows[0]} "
+                                "with different values", None)]
+                drop.append(r)
+    clean = clean.drop(index=drop)
 
     # rejects keep the row as it was in the file, under its source headers
     for row_no in sorted(bad_rows):
@@ -308,6 +331,11 @@ def validate(df: pd.DataFrame, spec: FileSpec) -> ValidationResult:
     result.clean = clean
     result.rows_rejected = len(bad_rows)
     return result
+
+
+def _covered(row: list, fullest: list) -> bool:
+    """Every value the row has, the fullest row has too, and the same: the row adds nothing."""
+    return all(v is None or v == f for v, f in zip(row, fullest))
 
 
 def _to_str_or_none(v):
