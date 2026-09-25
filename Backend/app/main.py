@@ -16,6 +16,7 @@ from .models.purchase_master import (ApprovalStatus, ApTermsTls, ApSuppliers, Ap
 from .models.inventory_master import BiStockDetail, InventoryOrgs, ItemInventoryOrgMappings, BiCollectorInventoryOrgMapping
 from .models.user_and_scope import (Users, Roles, UserRoles, UserMarketCircleMappings, UserCollectorMappings,
                                     UserCustomerMappings, CollectorMailMappings, TechnicalUserSegmentMappings)
+from .models.ingest import IngestFiles, IngestRejects, RAW_MODELS
 from .repositories.views import create_views
 from contextlib import asynccontextmanager
 from .core.config import settings

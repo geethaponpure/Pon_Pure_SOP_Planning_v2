@@ -123,10 +123,11 @@ def materialized_view_names():
             for name, is_mat in view_names(stmt) if is_mat]
 
 
-def refresh_materialized_views(pg_cur):
+def refresh_materialized_views(pg_cur, only=None):
     """Refresh every materialized view, in definition order so a view never reads a stale one it depends on.
     Concurrently where the view has a unique index (readers keep reading the old data meanwhile); a plain,
-    blocking refresh otherwise. Called by the etl after a run. Sync (psycopg2)."""
+    blocking refresh otherwise. Called by the etl after a run. Sync (psycopg2).
+    only: a set of view names to limit the refresh to (the excel ingest refreshes just its own views)."""
 
     pg_cur.execute("""
         SELECT m.matviewname,
@@ -137,7 +138,7 @@ def refresh_materialized_views(pg_cur):
         FROM pg_matviews m WHERE m.schemaname = current_schema()""")
     existing = {r[0]: r[1] for r in pg_cur.fetchall()}
     for name in materialized_view_names():
-        if name in existing:
+        if name in existing and (only is None or name in only):
             concurrently = "CONCURRENTLY " if existing[name] else ""
             pg_cur.execute(f'REFRESH MATERIALIZED VIEW {concurrently}"{name}"')
             print(f"refreshed {name}{' (concurrently)' if concurrently else ''}")

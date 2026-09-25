@@ -346,12 +346,16 @@ SELECT d.line_id                                       AS requisition_line_id,
            WHEN '8'  THEN 'immediate'
            WHEN '9'  THEN 'part advance'
            WHEN '10' THEN 'cash against documents'
+           -- a handful of terms carry no group code in the master, so fall back on the name.
+           -- squeeze the spacing first: the master holds things like 'LC at  Sight' with a double space.
            ELSE CASE
-               WHEN pt.name ~* 'advance'      THEN 'advance'
-               WHEN pt.name ~* 'bl|shipment'  THEN 'from shipment'
-               WHEN pt.name ~* 'immedi|cash'  THEN 'immediate'
-               WHEN pt.name ~* 'pdc'          THEN 'post dated cheque'
-               WHEN pt.name ~* 'term date'    THEN 'from term date'
+               WHEN regexp_replace(pt.name, '\s+', ' ', 'g') ~* 'at sight' THEN 'from shipment (letter of credit)'
+               WHEN regexp_replace(pt.name, '\s+', ' ', 'g') ~* 'awb'      THEN 'from shipment'
+               WHEN regexp_replace(pt.name, '\s+', ' ', 'g') ~* 'advance'  THEN 'advance'
+               WHEN regexp_replace(pt.name, '\s+', ' ', 'g') ~* 'bl|shipment' THEN 'from shipment'
+               WHEN regexp_replace(pt.name, '\s+', ' ', 'g') ~* 'immedi|cash' THEN 'immediate'
+               WHEN regexp_replace(pt.name, '\s+', ' ', 'g') ~* 'pdc'      THEN 'post dated cheque'
+               WHEN regexp_replace(pt.name, '\s+', ' ', 'g') ~* 'term date' THEN 'from term date'
            END
        END                                             AS payment_basis,
        d.item_id,
