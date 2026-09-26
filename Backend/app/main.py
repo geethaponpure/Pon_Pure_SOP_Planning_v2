@@ -1,5 +1,6 @@
 from fastapi import FastAPI
-from .core.database import Base, get_db, engine
+from .core.database import Base,engine
+from .api.deps import get_db
 from .models.metadata import crm_sync_table
 from .models.customer_master import CustomerMasters, CustomerSites, Collectors, MarketCircles, TempCustomers, ArCustomers
 from .models.items_master import ItemCategories, ItemMasters, PurchaseRequisitionPtoPts

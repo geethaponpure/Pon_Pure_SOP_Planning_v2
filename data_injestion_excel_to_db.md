@@ -175,10 +175,10 @@ Backend/
   api: POST /ingest/upload
       │  saves the file as uploads/<random>_<name>, checks it is really an .xlsx
       ▼
-  register_file(conn, spec, path, uploaded_by)        → file_id, status "received"
+  register_file(db, spec, path, uploaded_by)          → file_id, status "received"
       │  refuses: same file already uploaded (DuplicateFileError), wrong upload parameters (UploadError)
       ▼
-  run_ingest(file_id, path)
+  run_ingest(file_id, path, db)          reads + checks in a worker thread, db work on the pooled session
       │
       ├─ read_file ─────► ReadError?                   → failed
       ├─ validate ──────► file-level problem?          → failed
@@ -206,23 +206,22 @@ Backend/
 | `GET /ingest/template/{file_type}` | the Excel template |
 | `GET /ingest/files/{file_id}/rejects` | the problems of a rejected upload, with Excel column names and row numbers |
 
-The pipeline is synchronous. From `async` code call it through `run_in_threadpool` (or `BackgroundTasks`), never directly.
+The routes pass their `get_db` session down to the pipeline, which is async: `await` it directly, no `run_in_threadpool`.
 
 **From Python:**
 
 ```python
-from app.core.database import get_postgres_cursor
+from app.core.database import AsyncLocal          # the api's pooled async engine (get_db uses it too)
 from app.ingest.registry import get_spec
 from app.ingest.loader import register_file
 from app.ingest.runner import run_ingest
 
-conn, _ = get_postgres_cursor()
-try:
-    file_id = register_file(conn, get_spec("shelf_life"), path, uploaded_by="geetha")
-finally:
-    conn.close()
-result = run_ingest(file_id, path)          # result["status"], result["error"], row counts ...
+async with AsyncLocal() as session:
+    file_id = await register_file(session, get_spec("shelf_life"), path, uploaded_by="geetha")
+    result = await run_ingest(file_id, path, session)   # result["status"], result["error"], row counts ...
 ```
+
+The pipeline is async on the pooled session: no connection is opened per call. Reading the Excel and checking the rows run in a worker thread, so the api keeps serving other requests during a long upload.
 
 **From the command line** (from `Backend/`):
 
