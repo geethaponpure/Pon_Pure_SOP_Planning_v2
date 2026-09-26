@@ -12,3 +12,4 @@ uvicorn
 asyncpg
 psycopg2
 python-multipart
+httpx

@@ -1320,3 +1320,189 @@ FROM dim_item_lead_time WHERE supplier_leg_is_reliable GROUP BY 1 ORDER BY 2;
 SELECT delivery_status, count(*), round(sum(pending_value)::numeric)
 FROM v_open_po WHERE NOT is_abandoned GROUP BY 1 ORDER BY 2 DESC;
 ```
+
+
+---
+
+## ingest_models - the Excel uploads  `08_ingest_models.sql`
+
+The three things crm does not hold, uploaded as Excel: the **BOM**, **shelf life**, and **plant cycle times**. How the upload itself works is in `data_injestion_excel_to_db.md`.
+
+```text
+Excel Upload
+    │
+    ├──► raw_bom_extract ───┐
+    ├──► raw_shelf_life ────┼──► ingest_files.is_current
+    └──► raw_cycle_time ────┘          │
+                                       ▼
+dim_item ───────► v_item_by_code ───► v_item_shelf_life
+                                      
+dim_warehouse ──────────────────┬──► v_bom_line
+                                │
+                                └──► v_cycle_time ──► v_cycle_time_code_check
+                                      ▲
+                                      │
+BIRawMaterialConsumptions ─► v_item_made_at_plant
+       CRM manufacturing feed
+       (latest weekly run)
+```
+
+- **only the upload in use counts.** Every upload stays in its raw table as history; the views read only the current one - one per file type, one per plant for cycle time.
+- **every row is kept.** Non Performance Chemicals rows (Vooki / NPD, General Chemicals) are not dropped - they carry `is_pc = false`. A PC screen filters on `is_pc`; capacity counts everything, because those products run on the same machines.
+- **`is_pc` comes from `dim_item`.** `ItemCategories` is loaded for Performance Chemicals only, so an item with no category row is simply not PC - crm does classify it (NPD, General Chemicals ...).
+- **joined on item code.** The files carry codes, not ids, and a code is not unique in crm, so `v_item_by_code` picks one product per code.
+- plain views, nothing materialized: the uploads are small and a view is always up to date after an upload.
+
+### v_item_by_code - one product per code
+
+| | |
+| --- | --- |
+| one row per | item code |
+| answers | which product does this code in a file mean |
+
+- `dim_item` with one row per code. Where two products share a code: the Performance Chemicals one wins, then the active and enabled one, then the lower id.
+- a helper for the views below - screens use `dim_item`.
+
+### v_item_made_at_plant - what each plant has actually produced
+
+| | |
+| --- | --- |
+| one row per | plant · item code it has made |
+| join on | `warehouse_code` + `item_code` |
+| answers | has this plant ever made this item, how often, when last |
+
+```text
+  BIRawMaterialConsumptions (latest run only)
+     one row per job × output lot × raw material
+                 │  count distinct jobs
+                 ▼
+  v_item_made_at_plant: jobs · first_made · last_made
+```
+
+- the item is **what the job produced**. At PSM that is often the **packed** item itself - many products are filled straight into the pack, so there is no bulk item to look for.
+- crm keeps every weekly run of the feed; the etl loads only the latest, which holds the full history of jobs.
+- a job reaches the feed only after an oracle side event, usually within two weeks, and some closed bulk jobs never arrive. "Not here" means "not seen", not "never happened".
+
+### v_item_shelf_life - how long a product keeps
+
+| | |
+| --- | --- |
+| one row per | item code in the current shelf life upload |
+| join on | `item_id` |
+| answers | how many days until this product expires |
+
+**Columns:**
+
+| column | meaning | example |
+| --- | --- | --- |
+| `item_id` | the product, joins `dim_item` and every fact. Empty if crm does not know the code | |
+| `item_code` | product code as in the file | MDBULKVOFSC00006 |
+| `item_name` | crm's name, or the file's when crm does not know the code | VOOKI FLOOR+SURFACE CLEANER |
+| `shelf_life_days` | days from manufacture to expiry | 360 |
+| `shelf_life_code` | QMS control code | 1 |
+| `primary_uom` | unit, as QMS gives it | Litre |
+| `qms_group` | QMS product group (ATTRIBUTE1 in the file) | FLOOR+SURFACE CLEANER - NPD |
+| `qms_created_at` | when QMS set it up | 2018-07-25 15:09 |
+| `is_pc` | a Performance Chemicals product | false |
+| `business` › `category` › `family` | crm classification, PC products only | |
+| `is_active` | crm status | true |
+| `in_item_master` | false = a code crm does not know | true |
+| `file_id`, `loaded_at` | the upload these rows come from | |
+
+- most QMS shelf lives are one of two values: one year or three years.
+
+### v_bom_line - the bill of materials
+
+| | |
+| --- | --- |
+| one row per | organisation · assembly · alternate · component · substitute |
+| join on | `assembly_item_id` / `component_item_id` / `substitute_item_id` → `dim_item`, `warehouse_id` → `dim_warehouse` |
+| answers | what goes into a product, how much, where, and what may replace it |
+
+```text
+  assembly (the product made)
+     ├── component 10  × qty      ── substitute A (its own qty)
+     │                            ── substitute B
+     ├── component 20  × qty
+     └── component 30  × qty      (packing materials are components too)
+```
+
+- **a component with three substitutes is three rows.** To total a component's quantity take one row per component (`substitute_item_code` empty, or distinct `component_seq`), never sum all rows.
+- **`is_lot_basis`**: false = `component_qty` is per unit made; true = per batch (oracle basis type 2). Only a handful of lines, but they are off by the batch size if read the other way.
+- **`is_primary`** marks the primary recipe. Most planning uses only these. Alternates are free text in oracle (OSP, ALT1, RL_...).
+- **`assembly_segment`** (and business / category / family) is the classification **as the extract gives it** - the only source for NPD assemblies, which crm's category copy does not hold. `assembly_is_pc` / `component_is_pc` come from `dim_item`.
+- bulk intermediates are items with their own BOM, so a BOM is often multi level: a packed product's component is a bulk, whose own BOM holds the raw materials.
+- covers Performance Chemicals and NPD assemblies; the extract leaves General Chemicals out.
+- `row_no` is the Excel row, for tracing a line back to the file.
+
+### v_cycle_time - how long a batch takes, per plant
+
+| | |
+| --- | --- |
+| one row per | plant · product · machine · pack size |
+| join on | `item_id` → `dim_item`, `warehouse_id` → `dim_warehouse` |
+| answers | how many hours does one batch occupy this machine, and how big can it be |
+
+**Columns:**
+
+| column | meaning | example |
+| --- | --- | --- |
+| `warehouse_id`, `warehouse_code`, `plant` | the plant, spelled as crm names it | 944, 753, PSM - Thervoykandigai MFG |
+| `item_id`, `item_code`, `item_name` | the item the plant produces | MTPCBULK00000900, PUREPRINT BINDER FLR |
+| `product_name` | the name the plant uses (can differ from crm's) | PUREPRINT BINDER FLR |
+| `is_pc`, `business` › `category` › `family` | classification | true, Textile & Paper Division ... |
+| `equipment_id` | the vessel or machine | HSD-01 |
+| `equipment_capacity_l` | vessel capacity, litres | 200 |
+| `min_batch_kg`, `max_batch_kg` | batch size limits, kg | 200, 200 |
+| `packing_size`, `packing_uom` | the pack the batch is filled into | 50, LTRS |
+| `rm_charging_hrs` … `packing_hrs`, `cleaning_hrs` | hours per step | 1, 1, 0.5 ... |
+| **`cycle_hrs_with_cleaning`** | **hours one batch occupies the machine - the capacity number** | 4.75 |
+| `cycle_hrs_without_cleaning` | the same without cleaning | 4.5 |
+| `previous_cycle_hrs` | the earlier cycle time, where the sheet has it as a time | 4.0 |
+| `previous_cycle_time_raw` | that column as typed - the plant also writes remarks there | 04:00:00 |
+| `code_status` | ok, or why the item code needs a look (below) | ok |
+| `jobs_at_plant`, `last_made_at_plant` | production jobs crm has for this code at this plant | 16, 2025-01-20 |
+| `file_id`, `row_no`, `loaded_at` | the upload and its Excel row | |
+
+- **capacity**: demand in kg ÷ `max_batch_kg` = batches, × `cycle_hrs_with_cleaning` = machine hours. Max batch size is required in the upload for this reason.
+- one product can run on several machines and in several pack sizes - each is its own row.
+- **`code_status`** is worked out in this order:
+
+```text
+  no item code in the sheet            → missing
+  code not in crm                      → not in item master
+  crm has the item switched off        → inactive
+  this plant never produced this code  → not made at this plant   (usually the wrong grade or pack)
+  otherwise                            → ok
+```
+
+- "not made at this plant" stays quiet until the manufacturing feed has been loaded once, so an empty feed never flags every row.
+
+### v_cycle_time_code_check - the to-do list for the plant sheet
+
+| | |
+| --- | --- |
+| one row per | cycle time row whose `code_status` is not ok |
+| answers | which item codes to correct at the next upload |
+
+- the rows still count in `v_cycle_time`; this is only the list to fix. Empty = every code is right.
+- for "not made at this plant", look in `v_item_made_at_plant` for what the plant does make under that name.
+
+**Quick checks** (pgAdmin, after `SET search_path TO ponpure_planner;`)
+
+```sql
+-- what is loaded and in use
+SELECT file_type, period_key AS plant, file_id, uploaded_by, uploaded_at, rows_loaded
+FROM ingest_files WHERE is_current ORDER BY 1, 2;
+
+-- cycle time codes to fix (empty = all fine)
+SELECT plant, row_no, product_name, item_code, code_status FROM v_cycle_time_code_check;
+
+-- machine hours per plant and machine, PC products vs the rest
+SELECT plant, equipment_id, is_pc, count(*) AS products, round(avg(cycle_hrs_with_cleaning)::numeric, 1) AS avg_hrs
+FROM v_cycle_time GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+
+-- the primary recipe of one product
+SELECT component_seq, component_item_code, component_name, component_qty, is_lot_basis, substitute_item_code
+FROM v_bom_line WHERE assembly_item_code = 'MCPCBULK00000016' AND is_primary ORDER BY component_seq;
+```
