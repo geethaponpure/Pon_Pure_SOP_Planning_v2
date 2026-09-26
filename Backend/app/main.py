@@ -14,7 +14,8 @@ from .models.business_plan import (JourneyCalendars, JcWeeklyCalendars, SCBusine
                                    PlanApprovalHistory, PlanNameAlias)
 from .models.purchase_master import (ApprovalStatus, ApTermsTls, ApSuppliers, ApSupplierSitesAlls,
                                      BiPoDetails, BiGrnDetails, PurchaseRequisitionHdrs, PurchaseRequisitionDtls)
-from .models.inventory_master import BiStockDetail, InventoryOrgs, ItemInventoryOrgMappings, BiCollectorInventoryOrgMapping
+from .models.inventory_master import (BiStockDetail, InventoryOrgs, ItemInventoryOrgMappings, BiCollectorInventoryOrgMapping,
+                                      LotSubinventoryRestriction, CriticalStockConfigs, CriticalStocks)
 from .models.user_and_scope import (Users, Roles, UserRoles, UserMarketCircleMappings, UserCollectorMappings,
                                     UserCustomerMappings, CollectorMailMappings, TechnicalUserSegmentMappings)
 from .models.manufacturing import BIRawMaterialConsumptions

@@ -87,7 +87,10 @@ CRM_TABLES = {
         "InventoryOrgs",                    
         "BiStockDetail",
         "ItemInventoryOrgMappings",         
-        "BiCollectorInventoryOrgMapping"
+        "BiCollectorInventoryOrgMapping",
+        "LotSubinventoryRestriction",
+        "CriticalStockConfigs",
+        "CriticalStocks",
     ],
 
 # ────────────────────────────── Manufacturing ─────────────────────────────────────────────────────

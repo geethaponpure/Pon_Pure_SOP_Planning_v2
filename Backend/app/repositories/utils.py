@@ -10,6 +10,7 @@
 UPSERT_TABLES = {"Collectors", "MarketCircles", "CustomerMasters", "CustomerSites",
                  "ItemMasters", "ItemCategories", "DeliveryFroms", "QuotationStatus", 
                  "JourneyCalendars", "ApSuppliers", "ApprovalStatus", "ApTermsTls", "ApSupplierSitesAlls", "InventoryOrgs",
+                 "LotSubinventoryRestriction", "CriticalStockConfigs",
                  "Users", "Roles", "ArCustomers", "Reasons", "FinancialYears", "TempItemmasters", "JcWeeklyCalendars"}
 
 
@@ -32,7 +33,7 @@ SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules",
                    "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings",
                    "tempcustomers", "SPBusinessPlanActualSales", "SCBusinessPlanProjections", "PcBusinessPlanReopens", "SCBusinessPlanLogs",
                    "SCLeadTargets", "SCLeadTargetJcDtls", "LeadDetails", "LeadProducts",
-                   "BIRawMaterialConsumptions"}
+                   "BIRawMaterialConsumptions", "CriticalStocks"}
 
 
 
@@ -60,6 +61,8 @@ SOURCE_FILTERS = {
     "BiPoDetails": "[inventory_item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
     # goods receipts, same scope as the purchase orders they answer. ~311k of 836k
     "BiGrnDetails": "[inventory_item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
+    # crm's aged-stock rows carry no item id, only the category. same scope, through the category
+    "CriticalStocks": "[category_id] IN (SELECT category_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
     # ~225k of 324k
     "ItemInventoryOrgMappings": "[item_id] IN (SELECT item_id FROM [CRMPROD].[dbo].[ItemCategories] WHERE [segment1] = 'Performance Chemicals')",
     # no item id on the stock table, filter by item code. ~31% of each day. 2024 on = ~7.5M rows
@@ -595,6 +598,8 @@ PARENT_CHECK = {
     "BiCollectorInventoryOrgMapping": [("collector_id",     "Collectors",    "collector_id"),
                                        ("inventory_org_id", "InventoryOrgs", "inventory_org_id")],
     "ApSupplierSitesAlls": [("vendor_id", "ApSuppliers", "vendor_id")],
+    "CriticalStocks": [("customer_hdr_id", "CustomerMasters", "header_id"),
+                       ("collector_id",    "Collectors",      "collector_id")],
     "PurchaseRequisitionHdrs": [("collector_id",       "Collectors",            "collector_id"),
                                 ("supplier_id",        "ApSuppliers",           "vendor_id"),
                                 ("ship_to_inv_org_id", "InventoryOrgs", "inventory_org_id"),
@@ -660,10 +665,10 @@ LOAD_LEVELS = [
 #================================================ LEVEL 0 ===========================================================
     ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms",
      "QuotationStatus", "JourneyCalendars", "JcWeeklyCalendars", "ApSuppliers", "ApprovalStatus", "ApTermsTls", "Users", "Roles", "Reasons", "FinancialYears",
-     "BIRawMaterialConsumptions"],   # no parents (Users only points at itself; the consumption feed carries codes, not ids)
+     "BIRawMaterialConsumptions", "LotSubinventoryRestriction", "CriticalStockConfigs"],   # no parents (Users only points at itself; the consumption feed carries codes, not ids)
 
 #================================================ LEVEL 1 ===========================================================
-    ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "InventoryOrgs", "ApSupplierSitesAlls",
+    ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "InventoryOrgs", "ApSupplierSitesAlls", "CriticalStocks",
      "UserRoles", "UserCollectorMappings", "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings",
      "ArCustomers", "SPBusinessPlanActualSales", "SCBusinessPlanProjections", "TempItemmasters"],   # need level 0 (InventoryOrgs -> Collectors, the user mappings -> Users / Roles / Collectors / CustomerMasters)
 

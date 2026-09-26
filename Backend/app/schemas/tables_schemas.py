@@ -1143,6 +1143,81 @@ TABLES_COLUMNS = {
         # skipped: code_combination_id (gl account combo), internal_order_flag (99.9% Y), created_by / last_updated_by (always -1), SyncDate (null on 42%)
     ],
 
+    "LotSubinventoryRestriction": [   # crm's own not-for-sale sub-inventory list, 30 rows. upsert, level 0
+        "header_id",              # pk
+        "sub_inv_code",           # the code. case variants exist (LOSS / Loss) - match case-insensitively like sql server does
+        "creation_date",          # when it was added
+    ],
+
+    "CriticalStockConfigs": [     # crm's aged-stock thresholds per segment, 38 rows. upsert, level 0
+        "header_id",              # pk
+        "ASD",                    # age threshold in days
+        "total_stock_value",      # value floor in rupees
+        "segment3",               # matched by name. one carries a trailing newline, compare trimmed
+        "segment4",
+        "is_active",
+        "creation_date",
+        "last_update_date",
+        # skipped: created_by / last_updated_by
+    ],
+
+    "CriticalStocks": [           # crm's aged-stock run, one per cycle since jul 2022, 356k rows. PC only. snapshot, level 1
+        "header_id",              # pk
+        "acc_year",               # (acc_year, jc_type) = one run
+        "jc_type",
+        "type",
+        "is_new_customer",
+        "is_temp_customer",
+        "customer_hdr_id",        # -> CustomerMasters.header_id, 100%. NOT customer_id - small ids match that by coincidence
+        "collector_id",           # -> Collectors, 100%
+        "mc_code",
+        "category_id",            # item category, shared by many items. not an item key
+        "segment2",
+        "segment3",
+        "segment4",
+        "item_description",       # the product NAME, the only product key. name grain, like the business plan
+        "critical_stock_qty",
+        "critical_stock_value",   # lakhs
+        "avg_price",
+        "target_qty",
+        "target_value",           # lakhs
+        "avg_sales",
+        "stock_days",
+        "avg_cost",
+        "current_jc_qty",
+        "current_jc_value",
+        "difference",
+        "deadline_target_date",
+        "diff_type",
+        "te_remarks",
+        "bh_remarks",
+        "status_id",
+        "is_saved",
+        "ASD",
+        "total_stock_value",
+        "te_id",
+        "bh_id",
+        "creation_date",
+        "last_update_date",
+        "jc1_deadline_target_date",
+        "jc2_deadline_target_date",
+        "jc3_deadline_target_date",
+        "jc4_deadline_target_date",
+        "jc5_deadline_target_date",
+        "jc6_deadline_target_date",
+        "jc7_deadline_target_date",
+        "jc8_deadline_target_date",
+        "jc9_deadline_target_date",
+        "jc10_deadline_target_date",
+        "jc11_deadline_target_date",
+        "jc12_deadline_target_date",
+        "jc13_deadline_target_date",
+        "qgreater90",
+        "vgreater90",
+        "billtositeid",
+        # skipped: created_by / last_updated_by
+    ],
+
     "BiCollectorInventoryOrgMapping": [   # which warehouses a branch is configured to draw from. 496 rows = 422 pairs, only 60 of 129 collectors mapped. snapshot, level 2
         "Header_id",              # pk. 75 gaps, rows get deleted
         "collector_id",           # -> Collectors, 100% match

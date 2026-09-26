@@ -102,6 +102,9 @@ Stock on hand, the warehouses, and which products belong in which warehouse.
 
 - **InventoryOrgs** - the warehouses: code, name, city, state, active or not.
 - **BiStockDetail** - the daily stock position: quantity, cost and age of every lot in every warehouse.
+- **LotSubinventoryRestriction** - CRM's own list of storage areas whose stock may not be sold: quarantine, returns, rework and the like.
+- **CriticalStocks** - CRM's aged-stock follow-up: once a cycle, the products whose stock has sat too long, with the owners' remarks and deadlines.
+- **CriticalStockConfigs** - how old, and how valuable, stock must be before CRM flags it, per segment.
 - **ItemInventoryOrgMappings** - which products may be stocked in which warehouse.
 - **BiCollectorInventoryOrgMapping** - which warehouse serves which branch.
 

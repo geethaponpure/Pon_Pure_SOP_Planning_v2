@@ -1506,3 +1506,110 @@ FROM v_cycle_time GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 SELECT component_seq, component_item_code, component_name, component_qty, is_lot_basis, substitute_item_code
 FROM v_bom_line WHERE assembly_item_code = 'MCPCBULK00000016' AND is_primary ORDER BY component_seq;
 ```
+
+
+---
+
+## inventory_master - the stock  `09_inventory_master.sql`
+
+What we hold, whether it can be sold, how old it is, and how long it will last.
+
+```text
+  BiStockDetail  ──►  fact_stock_daily  (every morning's position, classed and valued)
+                            │
+          dim_subinventory ─┤   sellable / crm restricted / unsellable / production / in transit / packaging
+                            │
+             ┌──────────────┼──────────────────────┐
+             ▼              ▼                      ▼
+   fact_stock_position  fact_stock_lot        fact_stock_movement
+   today, per item      today, per lot:       morning-to-morning change
+   and warehouse        two ages + expiry     (the only consumption signal at plants)
+             │                                     │
+             └──────────────┬──────────────────────┘
+                            ▼
+                      v_stock_cover   available to promise ÷ rate of use = days of cover
+                            ▲
+      open orders ── fact_schedule_line      open POs ── v_open_po      dispatches ── fact_dispatch
+```
+
+### dim_subinventory - can this stock be sold
+
+| | |
+| --- | --- |
+| one row per | storage area that has ever held stock |
+| answers | is the stock here sellable, and if not, what kind it is |
+
+- **CRM decides**, through its own not-for-sale list. Nothing on the stock itself says so.
+- `stock_class` is more useful than a yes / no: **in transit** stock is on its way and counts as incoming, not as nothing.
+- Expired, Rejected and Non Moving are not on CRM's list but are treated as unsellable.
+
+### fact_stock_daily - every morning's position
+
+| | |
+| --- | --- |
+| one row per | day × warehouse × item × storage area × lot (unique) |
+| answers | what was held on a given morning, and what it was worth |
+
+- it is an **opening balance**: a row dated X is the position on the morning of X.
+- **weekly before mid November 2024, daily since.** Filter on `daily_resolution` before measuring anything over time.
+- every class is valued, so quarantined and expired stock come out in rupees as well as units.
+
+### fact_stock_position - today, per warehouse and item
+
+- units **and** rupees for each class side by side. Only `sellable_qty` can be promised to a customer - summing the total counts quarantined and expired stock as though it could be sold.
+
+### fact_stock_lot - today, per lot
+
+| | |
+| --- | --- |
+| one row per | lot on hand this morning |
+| answers | how old is it, how long has it sat here, when does it expire |
+
+- **two different ages.** Lot age runs from the lot's first receipt into the business; days at warehouse runs from when it reached *this* warehouse. A lot can be old and freshly arrived after a transfer - four lots in ten reached their current warehouse more than a month after receipt.
+- `arrived_before_history` marks lots already here when the stock history began; their days at warehouse is a floor.
+- **expiry is known only for manufactured goods**: directly for bulk items, and through the bill of materials for packed ones (`v_item_shelf_life_resolved` walks it down). Traded and imported goods have no shelf life recorded anywhere, so their expiry stays empty - by decision.
+
+### fact_stock_movement - what changed overnight
+
+- the net change per warehouse and item from one morning to the next, daily era only; only days with a change are kept.
+- a decrease is stock that left - sold, transferred out or consumed. For raw material at the plants it is the only consumption signal there is.
+
+### v_item_warehouse_scope / v_branch_warehouse
+
+- **scope**: every item and warehouse pair CRM allows. Stock never sits outside it; most pairs are allowed but empty.
+- **branch to warehouse** is measured from twelve months of dispatches, not taken from configuration: nearly every branch ships from more than one warehouse, and CRM's own mapping covers only part of them. `is_crm_mapped` says whether the configuration knows the pair.
+
+### v_stock_cover - will we run out
+
+| | |
+| --- | --- |
+| one row per | warehouse × item with stock, demand, open orders or open purchase orders |
+| answers | how many days the stock lasts |
+
+- built on **available to promise**: sellable stock minus the open orders already promised against it. Open orders are about a third of sellable stock, so cover on raw stock overstates badly.
+- **measured against the right rate.** Where a warehouse sells, the rate is its customer dispatches. Plants and ports mostly feed other warehouses rather than selling, so for them the rate is everything that leaves - otherwise their working stock would look idle. `rate_basis` says which was used.
+- incoming counts stock in transit to the warehouse and live purchase orders; abandoned purchase orders are left out.
+- open orders include future-dated ones, so **over-promised** can be a scheduling question rather than a shortage.
+
+### fact_critical_stock / v_critical_stock_product - CRM's own aged-stock follow-up
+
+- once a cycle CRM lists every product whose stock has sat too long and assigns the follow-up to each branch and customer that buys it; the owners write remarks and commit to deadlines.
+- **the stock figures are the product's, company-wide**, repeated on every branch and customer row. Summing `fact_critical_stock` across rows overstates several times over - use `v_critical_stock_product`, or sum only where `is_product_row`.
+- it **reconciles with our own figures**: CRM's latest run, counted once per product, sits within a few percent of the value of our lots over ninety days old.
+
+**Quick checks** (pgAdmin, after `SET search_path TO ponpure_planner;`)
+
+```sql
+-- stock by class, units and rupees
+SELECT k.stock_class, round(sum(t.quantity)) AS qty, round(sum(t.stock_value)/1e7, 2) AS crore
+FROM fact_stock_daily t JOIN dim_subinventory k USING (subinventory_code)
+WHERE t.stock_date = (SELECT max(trans_date) FROM "BiStockDetail") GROUP BY 1 ORDER BY 2 DESC;
+
+-- crm's aged stock against ours
+SELECT (SELECT round(sum(critical_stock_value)/1e7, 2) FROM v_critical_stock_product WHERE is_latest_run) AS crm_crore,
+       (SELECT round(sum(stock_value)/1e7, 2) FROM fact_stock_lot WHERE lot_age_days > 90) AS ours_over_90_days_crore;
+
+-- what is about to run out
+SELECT warehouse_name, item_name, available_to_promise, daily_rate, rate_basis, round(cover_days_available) AS days
+FROM v_stock_cover WHERE cover_status = 'under 15 days' ORDER BY cover_days_available LIMIT 20;
+```

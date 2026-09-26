@@ -11,7 +11,7 @@ Two kinds:
 
 Built views are documented in `views_applied.md` (what each view is, columns, rules, diagrams). This file is only the to-do list.
 
-Status: item_master, customer_master, sales_order_soc, dispatch_master, quotation_master, business_plan, purchase_master done - see views_applied.md. purchase_master carries the warehouse and supplier dimensions, the order book, the receipts, the requisitions, and measured lead times for both legs of supply (buying it in, and moving it between our own warehouses). Next: inventory_master, then user_and_scope, then the raw material layer (bom, consumption, cycle time).
+Status: item_master, customer_master, sales_order_soc, dispatch_master, quotation_master, business_plan, purchase_master done - see views_applied.md. purchase_master carries the warehouse and supplier dimensions, the order book, the receipts, the requisitions, and measured lead times for both legs of supply (buying it in, and moving it between our own warehouses). inventory_master done too: what stock we hold, whether it can be sold (by CRM's own not-for-sale list), how old each lot is and when it expires, how long it will last against what is already promised, and CRM's own aged-stock workflow. Next: user_and_scope, then the raw material layer (bom, consumption, cycle time).
 
 ## customer_master - built, see `views_applied.md`
 

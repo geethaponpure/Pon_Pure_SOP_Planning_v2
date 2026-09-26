@@ -490,6 +490,13 @@ The CRM Inventory data model consists of these tables:
 - BiStockDetail
 - ItemInventoryOrgMappings (which item may be stocked at which warehouse)
 - BiCollectorInventoryOrgMapping (which warehouses a branch is configured to draw from)
+- LotSubinventoryRestriction (CRM's not-for-sale sub-inventory list)
+- CriticalStockConfigs, CriticalStocks (CRM's aged-stock thresholds and its per-cycle follow-up)
+
+- **Whether stock can be sold is decided by `LotSubinventoryRestriction`**, which CRM applies as `subinventory_code NOT IN (...)`. It holds case variants (`LOSS` / `Loss`) that SQL Server treats as one code, so match it case-insensitively. It omits Expired, Rejected and Non Moving, which are unsellable anyway. One row's code is a sentence recording that `MKT B2B` was taken *off* the list, so `MKT B2B` is sellable.
+- **`CriticalStocks.customer_hdr_id` → `CustomerMasters.header_id`**, not `customer_id`. Joining on `customer_id` matches a share of rows by coincidence on small numbers and attaches stock to the wrong customer.
+- **`CriticalStocks` has no item id.** The product is `item_description` - name grain, the same as the business plan - and its stock figures are the product's company-wide total, repeated on every branch and customer row. Values are in lakhs. Its `ASD` column is the row's measured stock days, not the threshold; the thresholds are in `CriticalStockConfigs`, matched by segment name (one carries a trailing newline).
+- **`BiStockDetail` was weekly before 15 Nov 2024** (only the FIRST_DAY / FRIDAY / JC_START_DATE snapshots were kept) and daily since. `aging_date` is the lot's original receipt into the business, carried unchanged through transfers.
 
 The logical business relationship is:
 
