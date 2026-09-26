@@ -10,6 +10,7 @@ SHELF_LIFE = FileSpec(
     header_row=1,
     mode="replace",
     raw_table="raw_shelf_life",
+    strict_headers=True,                          # a system extract: a missing column is a wrong export, not n/a
     model_sql=("08_ingest_models.sql",),          # views over this table; plain views, nothing to refresh
     columns=(
         Col("Itemcode", "item_code", required=True,

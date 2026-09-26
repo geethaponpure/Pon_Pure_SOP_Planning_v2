@@ -11,6 +11,7 @@
 # cycle_time takes its plant from the Plant column; an upload replaces only that plant's sheet.
 
 import argparse
+import logging
 import sys
 import time
 from pathlib import Path
@@ -23,6 +24,9 @@ from app.ingest.registry import FILE_SPECS, get_spec
 from app.ingest.spec import FileSpec
 from app.ingest.validate import summarize_rejects, validate
 from app.repositories.views import VIEWS_DIR, refresh_materialized_views, split_statements, view_names
+
+
+log = logging.getLogger(__name__)
 
 
 def model_views(spec: FileSpec) -> set[str]:
@@ -66,7 +70,7 @@ def run_ingest(file_id: int, path) -> dict:
 
         result = validate(df, spec)
         counts = {"rows_read": result.rows_read, "rows_deduped": result.duplicates_dropped}
-        print(f"ingest {file_id} {file_type}: read {result.rows_read} rows in {time.time() - t:.1f}s")
+        log.info("ingest %s %s: read %s rows in %.1fs", file_id, file_type, result.rows_read, time.time() - t)
 
         if result.structural_errors:
             set_status(conn, file_id, "failed", step, "\n".join(result.structural_errors), **counts)
@@ -98,8 +102,8 @@ def run_ingest(file_id: int, path) -> dict:
             set_scope(cur, file_id, scope)
         previous = switch_current(cur, spec, file_id)
         set_status(conn, file_id, "modeling", rows_loaded=loaded)            # commits the load
-        print(f"ingest {file_id} {file_type}: loaded {loaded} rows into {spec.raw_table} in {time.time() - t:.1f}s"
-              + (f", replaces file {previous}" if previous else ""))
+        log.info("ingest %s %s: loaded %s rows into %s in %.1fs%s", file_id, file_type, loaded, spec.raw_table,
+                 time.time() - t, f", replaces file {previous}" if previous else "")
 
         # ---- model: the data is in and current; a failure here leaves it loaded, marked failed/modeling
         step = "modeling"
@@ -112,6 +116,7 @@ def run_ingest(file_id: int, path) -> dict:
         return _final(cur, file_id)
 
     except Exception as e:
+        log.exception("ingest %s failed at %s", file_id, step)
         conn.rollback()                           # drops a half-done load; the previous file stays current
         try:
             set_status(conn, file_id, "failed", step, f"{type(e).__name__}: {e}"[:4000])
@@ -130,13 +135,21 @@ def _final(cur, file_id: int) -> dict:
                rows_loaded, rows_rejected, error, is_current
         FROM ingest_files WHERE file_id = %s""", (file_id,))
     names = [d[0] for d in cur.description]
-    return dict(zip(names, cur.fetchone()))
+    final = dict(zip(names, cur.fetchone()))
+    if final["status"] == "published":
+        log.info("ingest %s %s: published, %s rows", file_id, final["file_type"], final["rows_loaded"])
+    else:
+        first = (final["error"] or "").splitlines()[:1]
+        log.warning("ingest %s %s: %s at %s - %s", file_id, final["file_type"], final["status"], final["step"],
+                    first[0] if first else "")
+    return final
 
 
 
 # ---------------------------------------------------------------- cli
 
 def main(argv=None) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")   # the cli shows the progress lines
     upload_params = sorted({p for spec in FILE_SPECS.values() for p in spec.upload_params})
 
     parser = argparse.ArgumentParser(prog="python -m app.ingest.runner",

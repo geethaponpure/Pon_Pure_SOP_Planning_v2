@@ -229,6 +229,9 @@ def _map_headers(df: pd.DataFrame, spec: FileSpec) -> tuple[dict[str, str], list
             used.add(found[0])
         elif col.required:
             errors.append(f"required column {col.source!r} is missing")
+        elif spec.strict_headers:
+            errors.append(f"column {col.source!r} is missing (keep every column of the export, "
+                          "even if its cells are blank)")
 
     ignored = [c for c in df.columns if c not in used and not c.startswith("_unnamed_")]
     return mapping, errors, ignored

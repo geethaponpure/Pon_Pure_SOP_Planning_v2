@@ -40,5 +40,8 @@ class FileSpec:
                                              # upload replaces only the earlier file of the same plant
     upload_params: tuple[str, ...] = ()      # Extra upload fields
     dedupe_exact: bool = False               # Remove exact duplicates
+    strict_headers: bool = False             # Every column must be present, optional ones too (their cells may
+                                             # be blank). For system extracts, where a missing column means a
+                                             # wrong or edited export, not "not applicable"
     model_sql: tuple[str, ...] = ()          # SQL models to run after load
     notes: tuple[str, ...] = ()              # File-specific tips for the template guidelines sheet

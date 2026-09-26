@@ -4,12 +4,13 @@
 # created in Backend/template/ at api start when missing. after changing a spec, rebuild with:
 #   python -m app.ingest.templates --force
 
+import math
 from pathlib import Path
 from typing import Any, cast
 
 from openpyxl import Workbook
 from openpyxl.comments import Comment
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Color, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
@@ -21,11 +22,22 @@ from app.ingest.validate import _CMP_RULE
 TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "template"      # Backend/template
 FORMAT_ROWS = 1000                                # rows pre-formatted and checked on the template sheet
 
-REQUIRED_FILL = PatternFill("solid", fgColor="1F4E78")
-OPTIONAL_FILL = PatternFill("solid", fgColor="D9E1F2")
-TITLE = Font(bold=True, size=14)
-BOLD = Font(bold=True)
+# the look agreed on 2026-09-26 (hand-tuned in excel, then built in here)
+FONT = "Calibri"
+REQUIRED_FILL = PatternFill("solid", fgColor="FF1F4E78")
+OPTIONAL_FILL = PatternFill("solid", fgColor="FFD9E1F2")
+TITLE_FILL = PatternFill("solid", fgColor=Color(theme=9, tint=0.5999938962981048))     # light green band
+SECTION_FILL = PatternFill("solid", fgColor=Color(theme=3, tint=0.5999938962981048))   # light blue-grey band
+BULLET_FILL = PatternFill("solid", fgColor=Color(theme=0, tint=-0.1499984740745262))   # light grey
+THIN = Side(style="thin")
+BOX = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+TITLE = Font(name=FONT, bold=True, size=14)
+BOLD = Font(name=FONT, bold=True, size=11)
+PLAIN = Font(name=FONT, size=11)
 WRAP = Alignment(wrap_text=True, vertical="top")
+HEADER_FONT_SIZE = 10
+LINE_HEIGHT = 14.5                                # points per wrapped line at 11pt
+GUIDE_WIDTHS = {"A": 40, "B": 11, "C": 22, "D": 24, "E": 60, "F": 28}
 
 TYPE_WORDS = {"str": "Text", "int": "Whole number", "float": "Number", "date": "Date (e.g. 25-Sep-2026)",
               "datetime": "Date and time", "bool": "Yes / No"}
@@ -73,10 +85,13 @@ def _how_it_works(spec: FileSpec) -> list[str]:
     else:
         mode = "Every upload covers one period and replaces only the earlier upload of the same period."
 
+    optional = ("Light blue headers are optional: their cells may be left blank, but the column itself must stay "
+                "in the file - a file with a column missing is refused."
+                if spec.strict_headers else "Light blue headers are optional.")
     lines = [
         f"Fill {sheet} of this workbook. Keep the header row exactly as it is: do not rename or delete header "
         "cells. Column order does not matter, and extra columns are ignored.",
-        "Dark blue headers are required columns: every row needs a value there. Light blue headers are optional.",
+        f"Dark blue headers are required columns: every row needs a value there. {optional}",
         "Hover over a header to see what to enter. The table below lists every column.",
         "Save the file in Excel as Excel Workbook (.xlsx) and upload that. Not .xls or .csv, and not a file "
         "last saved by another program: formulas would have no results.",
@@ -104,17 +119,27 @@ def build_template(spec: FileSpec) -> Workbook:
     assert spec.sheet is None, f"{spec.key}: a template named 'Template' would not match sheet={spec.sheet!r}"
     ws.freeze_panes = "A2"
 
+    header_lines = 1
     for i, col in enumerate(spec.columns, start=1):
         letter = get_column_letter(i)
         cell = ws.cell(1, i, col.source)
         cell.fill = REQUIRED_FILL if col.required else OPTIONAL_FILL
-        cell.font = Font(bold=True, color="FFFFFF" if col.required else "000000")
-        cell.alignment = Alignment(wrap_text=True, vertical="center")
-        note = ("Required. " if col.required else "Optional. ") + (col.help or "")
+        cell.font = Font(name=FONT, size=HEADER_FONT_SIZE, bold=True, color="FFFFFFFF" if col.required else "FF000000")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = BOX
+        if col.required:
+            kind = "Required. "
+        elif spec.strict_headers:
+            kind = "Optional: cells may be blank, but keep this column. "
+        else:
+            kind = "Optional. "
+        note = kind + (col.help or "")
         if _allowed(col):
             note += f" Allowed: {_allowed(col)}."
         cell.comment = Comment(note.strip(), "SOP tool", width=300, height=110)
-        ws.column_dimensions[letter].width = min(max(len(col.source) + 4, 14), 42)
+        width = min(max(len(col.source) + 4, 14), 42)                 # the header fits on one line where it can
+        ws.column_dimensions[letter].width = width
+        header_lines = max(header_lines, math.ceil(len(col.source) / (width - 3)))
 
         fmt = NUMBER_FORMATS.get(col.dtype)
         if fmt:
@@ -136,51 +161,67 @@ def build_template(spec: FileSpec) -> Workbook:
             dv.errorTitle, dv.showErrorMessage = "Not allowed here", True
             ws.add_data_validation(dv)
             dv.add(f"{letter}2:{letter}{FORMAT_ROWS + 1}")
-    ws.row_dimensions[1].height = 45
+    ws.row_dimensions[1].height = 8 + 14 * header_lines                # 22 for one line
 
     # ---------------- sheet 2: the guidelines
     gd = wb.create_sheet("Guidelines")
-    gd.column_dimensions["A"].width = 40
-    for letter, width in zip("BCDEF", (11, 22, 24, 60, 28)):
+    for letter, width in GUIDE_WIDTHS.items():
         gd.column_dimensions[letter].width = width
+    band_width = sum(GUIDE_WIDTHS.values())
 
-    gd.append([f"{spec.label} - how to fill the template"])
-    gd["A1"].font = TITLE
+    def band(text: str, font: Font, fill: PatternFill, align: Alignment, height: float | None = None) -> None:
+        """One line across A:F, merged, filled and boxed."""
+        gd.append([text])
+        r = gd.max_row
+        gd.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
+        for c in range(1, 7):                                       # a merged range needs every cell boxed
+            gd.cell(r, c).border = BOX
+            gd.cell(r, c).fill = fill
+        gd.cell(r, 1).font = font
+        gd.cell(r, 1).alignment = align
+        if height:
+            gd.row_dimensions[r].height = height
+
+    def bullet(text: str) -> None:
+        lines = math.ceil((len(text) + 2) / (band_width * 1.1))      # wide band, proportional font
+        band(f"• {text}", PLAIN, BULLET_FILL, WRAP, LINE_HEIGHT * lines if lines > 1 else None)
+
+    band(f"{spec.label} - how to fill the template", TITLE, TITLE_FILL, Alignment(horizontal="center"), 18.5)
     gd.append([])
-    gd.append(["How the upload works"])
-    gd.cell(gd.max_row, 1).font = BOLD
+    band("How the upload works", BOLD, SECTION_FILL, Alignment(horizontal="center"))
     for line in _how_it_works(spec):
-        gd.append([f"• {line}"])
-        gd.merge_cells(start_row=gd.max_row, start_column=1, end_row=gd.max_row, end_column=6)
-        gd.cell(gd.max_row, 1).alignment = WRAP
-        gd.row_dimensions[gd.max_row].height = 15 * (1 + len(line) // 150)
+        bullet(line)
 
     if spec.notes:
         gd.append([])
-        gd.append(["About this file"])
-        gd.cell(gd.max_row, 1).font = BOLD
+        band("About this file", BOLD, SECTION_FILL, Alignment(horizontal="center"))
         for line in spec.notes:
-            gd.append([f"• {line}"])
-            gd.merge_cells(start_row=gd.max_row, start_column=1, end_row=gd.max_row, end_column=6)
-            gd.cell(gd.max_row, 1).alignment = WRAP
-            gd.row_dimensions[gd.max_row].height = 15 * (1 + len(line) // 150)
+            bullet(line)
 
     gd.append([])
     gd.append(["Column", "Required", "Type", "Allowed values", "What to enter", "Example"])
     head = gd.max_row
     for cell in gd[head]:
-        cell.font = Font(bold=True, color="FFFFFF")
+        cell.font = Font(name=FONT, size=11, bold=True, color="FFFFFFFF")
         cell.fill = REQUIRED_FILL
+        cell.border = BOX
     for col in spec.columns:
         example = "" if col.example is None else col.example
-        gd.append([col.source, "Yes" if col.required else "", TYPE_WORDS[col.dtype], _allowed(col), col.help, example])
-        for cell in gd[gd.max_row]:
+        values = [col.source, "Yes" if col.required else "", TYPE_WORDS[col.dtype], _allowed(col), col.help, example]
+        gd.append(values)
+        r = gd.max_row
+        for cell in gd[r]:
             cell.alignment = WRAP
-        gd.cell(gd.max_row, 6).number_format = "@"
-        gd.cell(gd.max_row, 6).alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            cell.border = BOX
+        gd.cell(r, 6).number_format = "@"
+        gd.cell(r, 6).alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
         if col.required:
-            gd.cell(gd.max_row, 1).font = BOLD
-    gd.freeze_panes = gd.cell(head + 1, 1)
+            gd.cell(r, 1).font = BOLD
+        # tallest cell decides the row: roughly one line per column width of text
+        lines = max(math.ceil(len(str(v)) / (GUIDE_WIDTHS[get_column_letter(c)] * 1.1)) if v != "" else 1
+                    for c, v in enumerate(values, start=1))
+        if lines > 1:
+            gd.row_dimensions[r].height = LINE_HEIGHT * lines
 
     wb.active = 0
     return wb

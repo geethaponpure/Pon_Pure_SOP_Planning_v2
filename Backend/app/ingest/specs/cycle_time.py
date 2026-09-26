@@ -45,8 +45,8 @@ CYCLE_TIME = FileSpec(
             help="Vessel capacity in litres, number only (no 'L').", example=200),
         Col("MIN BATCH SIZE (IN KGS)", "min_batch_kg", "float", null_values=("-",),
             help="Smallest batch in kg, number only. '-' if not applicable.", example=200),
-        Col("MAX BATCH SIZE (IN KGS)", "max_batch_kg", "float", null_values=("-",),
-            help="Largest batch in kg, number only. '-' if not applicable.", example=200),
+        Col("MAX BATCH SIZE (IN KGS)", "max_batch_kg", "float", required=True, rule="> 0",
+            help="Largest batch in kg, number only. Needed to turn demand into batches for capacity.", example=200),
         Col("PACKING SIZE", "packing_size", "float", required=True, rule="> 0",
             help="Pack the batch is filled into, number only. The unit goes in UOM.", example=50),
         Col("UOM", "packing_uom", required=True,                             # LTRS / KGS / IBC
