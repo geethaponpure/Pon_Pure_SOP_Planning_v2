@@ -7,9 +7,9 @@
 --   weekly, then daily       before 15 nov 2024 only five to seven snapshots a month were kept (TypeOfTrx
 --                            FIRST_DAY / FRIDAY / JC_START_DATE); daily since. anything measured over
 --                            time starts in the daily era.
---   crm decides sellable     crm's own not-for-sale list (LotSubinventoryRestriction) is applied as
---                            subinventory_code NOT IN (...), case-insensitive because sql server is.
---                            it misses Expired / Rejected / Non Moving, which are treated as unsellable too.
+--   crm decides sellable     non-sellable if EITHER crm list says so: its system table
+--                            (LotSubinventoryRestriction, applied as NOT IN, case-insensitive like sql server)
+--                            or the crm team's own non-sellable list, which adds Expired / Rejected / Color.
 --   lot age is not shelf age aging_date is the lot's ORIGINAL receipt date, carried unchanged through every
 --                            transfer. time at this warehouse comes from the first sighting here.
 --   shelf life              only for manufactured bulk items (qms file), reached from a packed item through
@@ -28,35 +28,53 @@ WITH codes AS (
     SELECT DISTINCT subinventory_code AS code FROM "BiStockDetail" WHERE subinventory_code IS NOT NULL
 ),
 restricted AS (
-    -- crm keeps case variants (LOSS / Loss) that sql server treats as one code; so do we
+    -- list 1: crm's system table, which its own stock check applies. crm keeps case variants
+    -- (LOSS / Loss) that sql server treats as one code; so do we
     SELECT lower(btrim(sub_inv_code)) AS key, min(creation_date)::date AS listed_on
     FROM "LotSubinventoryRestriction"
     GROUP BY 1
+),
+team_list(key) AS (
+    -- list 2: the non-sellable sub-inventories the crm team gave us (sep 2026). it is not stored in crm.
+    -- it confirms Expired and Rejected, which the system table omits, and adds Color.
+    VALUES ('no sale'), ('clr/nonsal'), ('expired'), ('scrap'), ('rejected'), ('return'),
+           ('re-process'), ('color'), ('rework'), ('unrecon'), ('quarantine')
+),
+classed AS (
+    SELECT c.code,
+           r.key IS NOT NULL                           AS on_system_list,
+           t.key IS NOT NULL                           AS on_team_list,
+           r.listed_on,
+           -- non-sellable if EITHER list says so. the system table names the more technical areas
+           -- (outside processing, staging, lab, samples) that the team's business list leaves out
+           CASE
+               WHEN r.key IS NOT NULL                                  THEN 'crm restricted'
+               WHEN t.key IS NOT NULL                                  THEN 'non-sellable (crm team list)'
+               WHEN lower(c.code) IN ('wip', 'shop floor')             THEN 'production floor'
+               WHEN lower(c.code) = 'transport'                        THEN 'in transit'
+               WHEN c.code ILIKE 'pkg-%'                               THEN 'packaging'
+               ELSE 'sellable'
+           END                                         AS stock_class
+    FROM codes c
+    LEFT JOIN restricted r ON r.key = lower(btrim(c.code))
+    LEFT JOIN team_list t  ON t.key = lower(btrim(c.code))
 )
-SELECT c.code                                          AS subinventory_code,
-       CASE
-           WHEN r.key IS NOT NULL                                           THEN 'crm restricted'
-           WHEN lower(c.code) IN ('expired', 'rejected', 'non moving')       THEN 'unsellable, not in crm list'
-           WHEN lower(c.code) IN ('wip', 'shop floor', 're-process')         THEN 'production floor'
-           WHEN lower(c.code) = 'transport'                                 THEN 'in transit'
-           WHEN c.code ILIKE 'pkg-%'                                        THEN 'packaging'
-           ELSE 'sellable'
-       END                                             AS stock_class,
-       r.key IS NULL
-         AND lower(c.code) NOT IN ('expired', 'rejected', 'non moving', 'wip', 'shop floor', 're-process', 'transport')
-         AND c.code NOT ILIKE 'pkg-%'                  AS is_sellable,
-       r.key IS NOT NULL                               AS is_crm_restricted,
-       r.listed_on                                     AS crm_restricted_since
-FROM codes c
-LEFT JOIN restricted r ON r.key = lower(btrim(c.code));
+SELECT code                                            AS subinventory_code,
+       stock_class,
+       stock_class = 'sellable'                        AS is_sellable,
+       on_system_list                                  AS is_crm_restricted,
+       on_team_list                                    AS is_on_crm_team_list,
+       listed_on                                       AS crm_restricted_since
+FROM classed;
 
 CREATE UNIQUE INDEX dim_subinventory_pk ON dim_subinventory (subinventory_code);
 
-COMMENT ON MATERIALIZED VIEW dim_subinventory IS 'Every sub-inventory that has held stock, and what kind of stock sits there. CRM has no flag for this on the stock itself: whether stock can be sold is decided by CRM''s own not-for-sale list, which its stock check applies by code. Use stock_class rather than just is_sellable - stock in transit is on its way and counts as incoming, not as nothing.';
-COMMENT ON COLUMN dim_subinventory.stock_class IS 'sellable; crm restricted (on CRM''s own not-for-sale list - quarantine, returns, rework, unreconciled, samples, scrap and the rest); unsellable, not in crm list (Expired, Rejected, Non Moving - CRM''s list omits them but they plainly cannot be sold); production floor (WIP, shop floor, re-process); in transit (Transport - on its way to this warehouse); packaging (empty and cleaned drums).';
+COMMENT ON MATERIALIZED VIEW dim_subinventory IS 'Every sub-inventory that has held stock, and what kind of stock sits there. CRM has no flag for this on the stock itself. Stock is non-sellable if EITHER of CRM''s two lists says so: its system table (LotSubinventoryRestriction, which CRM''s stock check applies) or the non-sellable list the CRM team gave us. Use stock_class rather than just is_sellable - stock in transit is on its way and counts as incoming, not as nothing.';
+COMMENT ON COLUMN dim_subinventory.stock_class IS 'sellable; crm restricted (on CRM''s system not-for-sale table - quarantine, returns, rework, unreconciled, outside processing, staging, lab, samples, scrap and the rest); non-sellable (crm team list) (on the CRM team''s list but not the system table - Expired, Rejected, Re-Process, Color); production floor (WIP, shop floor); in transit (Transport - on its way to this warehouse); packaging (empty and cleaned drums). Non Moving is sellable: slow is not unsellable, and neither list names it.';
 COMMENT ON COLUMN dim_subinventory.is_sellable IS 'True only for the sellable class. This is the stock a planner can promise to a customer.';
-COMMENT ON COLUMN dim_subinventory.is_crm_restricted IS 'On CRM''s own not-for-sale list, matched without regard to case or spacing exactly as CRM''s database does. MKT B2B is deliberately NOT restricted: the list holds a row reading "MKT B2B- This was removed ..." - someone''s note that it was taken off, typed into the code field instead of deleting the row.';
-COMMENT ON COLUMN dim_subinventory.crm_restricted_since IS 'When CRM added the code to its list. Stock history before that date was sellable by CRM''s rule at the time.';
+COMMENT ON COLUMN dim_subinventory.is_crm_restricted IS 'On CRM''s system not-for-sale table, matched without regard to case or spacing exactly as CRM''s database does. MKT B2B is deliberately NOT restricted: the table holds a row reading "MKT B2B- This was removed ..." - someone''s note that it was taken off, typed into the code field instead of deleting the row.';
+COMMENT ON COLUMN dim_subinventory.is_on_crm_team_list IS 'On the non-sellable list the CRM team supplied (Sep 2026). That list is not stored in CRM; it is kept in this view. Most of its codes are on the system table too - it adds Expired, Rejected, Re-Process and Color.';
+COMMENT ON COLUMN dim_subinventory.crm_restricted_since IS 'When CRM added the code to its system table. Stock history before that date was sellable by CRM''s rule at the time.';
 
 
 -- ---------------------------------------------------------------------------------------------------------------
@@ -142,14 +160,14 @@ SELECT t.warehouse_id,
        sum(t.quantity)                                 AS total_qty,
        sum(t.quantity)    FILTER (WHERE t.stock_class = 'sellable')                    AS sellable_qty,
        sum(t.quantity)    FILTER (WHERE t.stock_class = 'crm restricted')              AS restricted_qty,
-       sum(t.quantity)    FILTER (WHERE t.stock_class = 'unsellable, not in crm list') AS unsellable_qty,
+       sum(t.quantity)    FILTER (WHERE t.stock_class = 'non-sellable (crm team list)') AS unsellable_qty,
        sum(t.quantity)    FILTER (WHERE t.stock_class = 'production floor')            AS production_qty,
        sum(t.quantity)    FILTER (WHERE t.stock_class = 'in transit')                  AS in_transit_qty,
        sum(t.quantity)    FILTER (WHERE t.stock_class = 'packaging')                   AS packaging_qty,
        sum(t.stock_value)                              AS total_value,
        sum(t.stock_value) FILTER (WHERE t.stock_class = 'sellable')                    AS sellable_value,
        sum(t.stock_value) FILTER (WHERE t.stock_class = 'crm restricted')              AS restricted_value,
-       sum(t.stock_value) FILTER (WHERE t.stock_class = 'unsellable, not in crm list') AS unsellable_value,
+       sum(t.stock_value) FILTER (WHERE t.stock_class = 'non-sellable (crm team list)') AS unsellable_value,
        sum(t.stock_value) FILTER (WHERE t.stock_class = 'production floor')            AS production_value,
        sum(t.stock_value) FILTER (WHERE t.stock_class = 'in transit')                  AS in_transit_value,
        sum(t.stock_value) FILTER (WHERE t.stock_class = 'packaging')                   AS packaging_value,
@@ -164,7 +182,7 @@ CREATE INDEX fact_stock_position_item ON fact_stock_position (item_id);
 COMMENT ON MATERIALIZED VIEW fact_stock_position IS 'Stock on hand this morning, per warehouse and item, split by what kind of stock it is - in units and in rupees. Only the sellable column is stock a customer can be promised; summing total_qty counts quarantined, expired and returned stock as though it could be sold.';
 COMMENT ON COLUMN fact_stock_position.sellable_qty IS 'Stock that can be sold today. The number to plan against.';
 COMMENT ON COLUMN fact_stock_position.restricted_qty IS 'On CRM''s own not-for-sale list: quarantine, returns, rework, unreconciled, samples, scrap and the like.';
-COMMENT ON COLUMN fact_stock_position.unsellable_qty IS 'Expired, rejected or non-moving - not on CRM''s list, but not sellable either.';
+COMMENT ON COLUMN fact_stock_position.unsellable_qty IS 'On the CRM team''s non-sellable list but not the system table: expired, rejected, re-process and colour stock.';
 COMMENT ON COLUMN fact_stock_position.in_transit_qty IS 'On its way to this warehouse. Counts as incoming supply, not stock on the shelf.';
 COMMENT ON COLUMN fact_stock_position.oldest_lot_age_days IS 'Age of the oldest lot here, from its original receipt into the business.';
 

@@ -186,7 +186,7 @@ Backend/
       │
       ├─ load_raw (COPY) + switch_current + status     ← ONE transaction: all or nothing
       │                                                  → modeling
-      ├─ refresh materialized views of the spec (none today, the views are plain)
+      ├─ refresh the materialized views that read this upload (model_sql ∩ what postgres says depends on raw_<type>)
       ▼
   published   returns the ingest_files row as a dict
 ```
@@ -243,7 +243,7 @@ Everything about a file type lives in its spec (`app/ingest/specs/<type>.py`). T
 | `sheet`, `header_row` | `None` = first sheet · a row number, or `auto` to search for the header |
 | `dedupe_exact` | drop rows identical in every column |
 | `strict_headers` | every column must be present, optional ones too (the system extracts) |
-| `model_sql` | the view file that uses this table |
+| `model_sql` | the view files that use this table. After a load, only their materialized views that postgres records as reading the raw table are refreshed - e.g. a BOM or shelf life upload refreshes `fact_stock_lot`, not the other stock views |
 | `notes` | extra lines for the template's Guidelines sheet |
 
 Column types: `str` text · `int` whole number · `float` number · `date` · `datetime` · `bool`.

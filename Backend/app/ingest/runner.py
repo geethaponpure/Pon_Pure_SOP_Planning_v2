@@ -48,6 +48,29 @@ def model_views(spec: FileSpec) -> set[str]:
 
 
 
+async def dependent_matviews(session: AsyncSession, table: str) -> set[str]:
+    """Materialized views that read the table, directly or through other views, as postgres records it.
+    A file listed in model_sql can hold views that have nothing to do with this upload (the stock file's
+    movement and position views) - refreshing those is wasted work."""
+
+    rows = (await session.execute(text("""
+        WITH RECURSIVE deps(oid) AS (
+            SELECT to_regclass(:table)::oid
+            UNION
+            SELECT r.ev_class                                  -- a view whose query reads deps.oid
+            FROM deps d
+            JOIN pg_depend dep ON dep.refobjid = d.oid
+                              AND dep.refclassid = 'pg_class'::regclass
+                              AND dep.classid = 'pg_rewrite'::regclass
+            JOIN pg_rewrite r ON r.oid = dep.objid
+            WHERE r.ev_class <> d.oid
+        )
+        SELECT c.relname FROM deps JOIN pg_class c ON c.oid = deps.oid WHERE c.relkind = 'm'"""),
+        {"table": table})).all()
+    return {r[0] for r in rows}
+
+
+
 async def refresh_views(session: AsyncSession, only: set[str]) -> None:
     """Async twin of repositories.views.refresh_materialized_views for the given views: in definition
     order, concurrently where the view has a unique index. No commit."""
@@ -139,9 +162,15 @@ async def _run(session: AsyncSession, file_id: int, path) -> dict:
 
         # ---- model: the data is in and current; a failure here leaves it loaded, marked failed/modeling
         step = "modeling"
+        # only the model_sql views that really read this upload's table
         views = model_views(spec)
         if views:
+            views &= await dependent_matviews(session, spec.raw_table)
+        if views:
+            t = time.time()
             await refresh_views(session, views)
+            log.info("ingest %s %s: refreshed %s in %.1fs", file_id, file_type, ", ".join(sorted(views)),
+                     time.time() - t)
             await session.commit()
 
         await set_status(session, file_id, "published")

@@ -1517,7 +1517,7 @@ What we hold, whether it can be sold, how old it is, and how long it will last.
 ```text
   BiStockDetail  ──►  fact_stock_daily  (every morning's position, classed and valued)
                             │
-          dim_subinventory ─┤   sellable / crm restricted / unsellable / production / in transit / packaging
+          dim_subinventory ─┤   sellable / crm restricted / non-sellable (team list) / production / in transit / packaging
                             │
              ┌──────────────┼──────────────────────┐
              ▼              ▼                      ▼
@@ -1539,9 +1539,10 @@ What we hold, whether it can be sold, how old it is, and how long it will last.
 | one row per | storage area that has ever held stock |
 | answers | is the stock here sellable, and if not, what kind it is |
 
-- **CRM decides**, through its own not-for-sale list. Nothing on the stock itself says so.
+- **CRM decides**, through two lists, and stock is non-sellable if **either** says so: CRM's system table (`LotSubinventoryRestriction`, which its own stock check applies) and the non-sellable list the CRM team supplied. Nothing on the stock itself says so.
 - `stock_class` is more useful than a yes / no: **in transit** stock is on its way and counts as incoming, not as nothing.
-- Expired, Rejected and Non Moving are not on CRM's list but are treated as unsellable.
+- the team's list confirms Expired and Rejected (missing from the system table) and adds Re-Process and Color. The system table adds the technical areas the team's list leaves out - outside processing (OSP), staging, lab, samples.
+- **Non Moving is sellable**: slow is not unsellable, and neither list names it.
 
 ### fact_stock_daily - every morning's position
 
