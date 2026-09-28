@@ -16,7 +16,8 @@ from .models.purchase_master import (ApprovalStatus, ApTermsTls, ApSuppliers, Ap
                                      BiPoDetails, BiGrnDetails, PurchaseRequisitionHdrs, PurchaseRequisitionDtls)
 from .models.inventory_master import (BiStockDetail, InventoryOrgs, ItemInventoryOrgMappings, BiCollectorInventoryOrgMapping,
                                       LotSubinventoryRestriction, CriticalStockConfigs, CriticalStocks)
-from .models.access_control import PlaceholderOperator, PlaceholderDecision
+from .models.access_control import (PlaceholderOperator, PlaceholderDecision, AppPage, AppRole, AppRolePage,
+                                    AppUser, AppUserPage, AppAuditLog)
 from .models.user_and_scope import (Users, Roles, UserRoles, UserMarketCircleMappings, UserCollectorMappings,
                                     UserCustomerMappings, CollectorMailMappings, TechnicalUserSegmentMappings,
                                     RoleTypes, RoleConfigs, RoleHierarchies, Claims, RoleClaims, UserClaims,
@@ -25,6 +26,7 @@ from .models.user_and_scope import (Users, Roles, UserRoles, UserMarketCircleMap
 from .models.manufacturing import BIRawMaterialConsumptions
 from .models.ingest import IngestFiles, IngestRejects, RAW_MODELS
 from .repositories.views import create_views
+from .repositories.access_seed import seed_access
 from contextlib import asynccontextmanager
 from .core.config import settings
 from sqlalchemy import text
@@ -49,6 +51,9 @@ async def lifespan(app:FastAPI):
         await conn.run_sync(Base.metadata.create_all)
 
         await create_views(conn)
+
+        # the tool's pages and starter roles: added when missing, never overwritten - the admin owns them
+        await seed_access(conn)
 
         # uploads run as background tasks inside this process. at start nothing can be running, so an
         # upload still in progress was cut off by a restart: mark it failed so the ui stops polling.

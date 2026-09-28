@@ -760,3 +760,5 @@ Large = an incremental table too big for one read (`LARGE_TABLES`): the pk span 
 - **`CustomerSites.mc_code_raw`** is not a CRM column: the loader keeps CRM's circle code here before rewriting it. Both an empty code and a code with no circle become `unknown` in `mc_code`; only `mc_code_raw` tells them apart.
 - **`placeholder_operator`** is the tool's own table (placeholder login → the real person operating it), filled by the admin, never by the loader.
 - **`placeholder_decision`** is the tool's own table: a recorded ruling (person or placeholder) on one account. It overrides both CRM's dummy flag and the name rule, and is the only way to correct either.
+- **`app_user.user_id`** is CRM's `Users.line_id`, but deliberately **not** a foreign key: a reload that emptied `Users` with cascade would delete every login. The API checks the id against CRM when onboarding; `v_app_user` joins `dim_user` to show whether the person is still active in CRM.
+- **`app_role_page` / `app_user_page`** → `app_page` and `app_role` / `app_user`: real foreign keys, all tool-owned.

@@ -11,7 +11,7 @@ Two kinds:
 
 Built views are documented in `views_applied.md` (what each view is, columns, rules, diagrams). This file is only the to-do list.
 
-Status: item_master, customer_master, sales_order_soc, dispatch_master, quotation_master, business_plan, purchase_master done - see views_applied.md. purchase_master carries the warehouse and supplier dimensions, the order book, the receipts, the requisitions, and measured lead times for both legs of supply (buying it in, and moving it between our own warehouses). inventory_master done too: what stock we hold, whether it can be sold (by CRM's own not-for-sale list), how old each lot is and when it expires, how long it will last against what is already promised, and CRM's own aged-stock workflow. user_and_scope done too: who people are, which rows CRM lets them see and which permissions it gives them - the seed for the tool's own admin-controlled access grants. Next: the raw material layer (bom, consumption, cycle time).
+Status: item_master, customer_master, sales_order_soc, dispatch_master, quotation_master, business_plan, purchase_master done - see views_applied.md. purchase_master carries the warehouse and supplier dimensions, the order book, the receipts, the requisitions, and measured lead times for both legs of supply (buying it in, and moving it between our own warehouses). inventory_master done too: what stock we hold, whether it can be sold (by CRM's own not-for-sale list), how old each lot is and when it expires, how long it will last against what is already promised, and CRM's own aged-stock workflow. user_and_scope done too: who people are, which rows CRM lets them see and which permissions it gives them - and access_control on top of it: the tool's own users, roles and pages, with each person's rows following CRM. Next: the raw material layer (bom, consumption, cycle time).
 
 ## customer_master - built, see `views_applied.md`
 
@@ -84,6 +84,10 @@ Status: item_master, customer_master, sales_order_soc, dispatch_master, quotatio
 | CollectorMailMappings | split `coordinator_user_id` (text, ids or a comma list) into the same bridge as role `coordinator` | |
 | TechnicalUserSegmentMappings | `user_segments_current`: `valid_to` null or future. Join `ItemCategories` on `segment2 + segment3 (+ segment4 when filled)` to get the items a technical person covers; then split `collector_id` (comma list, `'0'` / null = all branches) to narrow by branch | the segment key is text on both sides, no fk |
 | all mappings | **a user's scope** = union of: their current circle(s) (Sales Exec), branches (back office), customers (TE), segments x branches (TM / TH), branches managed (chain). Roles decide which one applies - build one `user_scope` view keyed by user with the four lists, rather than four separate joins in every report | |
+
+## access_control - built, see `views_applied.md`
+
+Next here is the API (onboard, temporary password, login, change password, role and page edits), not more views.
 
 ## cross cutting
 

@@ -1730,3 +1730,89 @@ WHERE is_planning_permission AND is_granted GROUP BY 1, 2 ORDER BY 1, 3 DESC;
 -- customers with no active owner, and why
 SELECT ownership_status, count(DISTINCT customer_hdr_id) FROM v_customer_ownership GROUP BY 1 ORDER BY 2 DESC;
 ```
+
+
+## access_control - who uses the tool  `11_access_control.sql`
+
+```text
+Admin picks a CRM user ──► onboard ──► temporary password ──► user sets their own at first login
+        │
+        └── assigns one role ──► the role's default pages ──► admin adds / removes pages for that person
+                                                                    │
+User opens a page ──► sees the rows CRM ties to them  (or everything, when their access is "all")
+```
+
+The admin decides who and which pages, in the tool's own tables (`app_user`, `app_role`, `app_role_page`, `app_user_page`). The rows inside a page follow CRM through the user_and_scope views, so nobody maintains them by hand.
+
+### The tables
+
+| table | holds | notes |
+| --- | --- | --- |
+| `app_page` | the screens | seeded from the frontend's nav; retired with `is_active`, never deleted |
+| `app_role` | a few roles, not CRM's hundred | `data_access`: **own** or **all** |
+| `app_role_page` | a role's default pages | `can_edit` false = read-only |
+| `app_user` | onboarded CRM users | password stored scrambled; `must_change_password` after the admin issues one |
+| `app_user_page` | one person's page changes | `add` or `remove` |
+| `app_audit_log` | every admin action and password event | only ever added to |
+
+- the pages and starter roles are **seeded** at API start (`app/repositories/access_seed.py`). The seed only adds what is missing: once a role exists it belongs to the admin, and a page the admin took off a role is never put back.
+- `app_user` has no foreign key to CRM's `Users` on purpose: a reload that emptied `Users` would otherwise take every login with it.
+
+### Starter roles
+
+| role | data | pages |
+| --- | --- | --- |
+| Admin | all | every page |
+| Planner | all | dashboard, supply planning pages, production, receipts; projections read-only |
+| Purchase | all | dashboard, receipts, supplier scorecard, price variance; supply plan read-only |
+| Sales | own | dashboard, supply position (read-only), projections, R&D sample requests |
+| Management | all | every page except the admin ones, read-only |
+| R&D / Quality / Warehouse | all / all / own | their sample page, plus the dashboard (warehouse also sees plant stock) |
+
+A starting point only - the admin changes them on Role Master.
+
+### v_onboard_candidate - the admin's pick list
+
+- active CRM users not yet onboarded. Placeholder logins and people who have left never appear.
+- `needs_confirmation` marks a login CRM calls a dummy that carries a person's name - check before onboarding.
+
+### v_app_user - the user list
+
+- role, the data access in force (the person's own setting, else the role's), and `can_log_in`.
+- `can_log_in` needs the person active in the tool **and** in CRM. Someone who leaves is switched off in CRM and loses the tool the same day.
+
+### v_user_page_access - which pages
+
+**pages = the role's pages + pages added for the person - pages removed for the person**
+
+- what the login returns to build the menu, and what the API checks before serving a page.
+- `granted_by` says why: role / added for this user / role, changed for this user.
+
+### v_user_data_scope - which rows
+
+Every page filters through this one view. Three dimensions; for each, a person either sees everything (`sees_all`) or a list:
+
+| dimension | "own" follows CRM | everyone else |
+| --- | --- | --- |
+| customer | sales executive, technical executive, branch and regional manager, branch-list roles: **their customers** | all customers - CRM gives every other role all circles |
+| warehouse | the warehouses CRM maps them to | all warehouses, when CRM maps them to none |
+| product | technical executive: their product categories · technical manager / head: their segments · business head: the segments they approve | all products |
+
+- `data_access = all` gives everything on all three.
+- the lists combine: a technical executive sees **their customers and their categories**.
+- no rows at all on a dimension = the person sees nothing there. That happens when CRM limits someone but maps them to nothing yet - a newly joined sales executive, say. The fix is in CRM, or the admin sets that person to "all".
+- always filter on `user_id`; read whole it is large.
+
+**Quick checks**
+
+```sql
+-- the menu of one user
+SELECT page_code, can_edit, granted_by FROM v_user_page_access WHERE user_id = 1521 ORDER BY sort_order;
+
+-- what one user sees, per dimension
+SELECT dimension, bool_or(sees_all) AS sees_all, count(*) AS rows_, min(via) AS via
+FROM v_user_data_scope WHERE user_id = 1521 GROUP BY 1;
+
+-- the last admin actions
+SELECT at, actor, action, user_id, page_code, detail FROM app_audit_log ORDER BY at DESC LIMIT 50;
+```

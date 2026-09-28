@@ -128,3 +128,14 @@ The people, their roles, and what each person is responsible for.
 - **UserCustomerMappings** - which customers each Technical Executive looks after.
 - **CollectorMailMappings** - the management chain of each branch: branch manager, regional manager and above.
 - **TechnicalUserSegmentMappings** - which product segments and branches each Technical Manager or Head covers.
+
+## 10. access_control - who may use the tool
+
+Ours, not CRM's. The admin fills these in from Role Master and User Master; the loader never touches them.
+
+- **app_page** - the screens of the tool, by the code the frontend uses (mydash, supply, usermaster ..).
+- **app_role** - the tool's roles: a default set of pages, and whether its people see their own data or all of it.
+- **app_role_page** - the default pages of each role, and whether each opens read-only.
+- **app_user** - the CRM users the admin has onboarded: login name, password (stored scrambled, never readable), role.
+- **app_user_page** - one person's changes to their role's pages: a page added, or a page taken away.
+- **app_audit_log** - every admin action and password event, in order. Rows are only ever added.
