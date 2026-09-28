@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, Text, Boolean, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, BigInteger, Integer, Text, Boolean, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
@@ -55,7 +55,7 @@ class Roles(Base):
     is_prime = Column(Boolean)                                               # 64
     is_active = Column(Boolean)                                              # all 108
     is_deleted = Column(Boolean)                                             # 1 (SS Quote), still on 7 users. loaded, not filtered
-    role_type_id = Column(BigInteger)                                        # 20 values, no master in crm
+    role_type_id = Column(BigInteger)                                        # -> RoleTypes.line_id (All Access / Senior Management / Sales ..), 100%. soft: both load at level 0
     creation_date = Column(DateTime)
     last_update_date = Column(DateTime)
 
@@ -90,6 +90,7 @@ class UserMarketCircleMappings(Base):
     valid_from = Column(DateTime)                                            # always filled
     valid_to = Column(DateTime)                                              # null = current (237). a user re-assigned to the same circle gets a new row, the old one closed
     is_primary = Column(Boolean)                                             # 245 true
+    cross_marketcircle_segmentaccess_flag = Column(Boolean)                  # crm's scope rule reads it: a sales executive with it set sees every circle of their branch. false on all today
     creation_date = Column(DateTime)                                         # null on 145
     last_update_date = Column(DateTime)
 
@@ -180,3 +181,240 @@ class TechnicalUserSegmentMappings(Base):
     role = relationship("Roles")
     user = relationship("Users", foreign_keys=[user_id])
     reports_to = relationship("Users", foreign_keys=[reporting_user_id])
+
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# role configuration: how crm decides what a role may see and do. the rules themselves live in crm's code
+# (Fn_CD_GetMarketCircleList and friends); these tables are what that code reads.
+# ---------------------------------------------------------------------------------------------------------------
+
+class RoleTypes(Base):
+
+    __tablename__ = "RoleTypes"
+
+    # the family a role belongs to: All Access / Senior Management / Sales .. 20 rows. Roles.role_type_id points here.
+
+    line_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    name = Column(Text)
+    description = Column(Text)
+    hierarchy_id = Column(Integer)
+    is_prime = Column(Boolean)
+    is_active = Column(Boolean)
+    is_deleted = Column(Boolean)
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+
+
+class RoleConfigs(Base):
+
+    __tablename__ = "RoleConfigs"
+
+    # which scope rule crm applies to a role: User / Collector / Market Circle / All Collector. only 31 of 108 roles
+    # are configured; crm's code gives every other role everything. "All Collecto" is a typo of "All Collector"
+    # (same config_type_id 4) - use config_type_id, not the name.
+
+    header_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    role_id = Column(BigInteger, ForeignKey("Roles.line_id"), nullable=False, index=True)   # 100%
+    role_name = Column(Text)
+    config_type_id = Column(BigInteger)                                      # 1 User / 2 Collector / 3 Market Circle / 4 All Collector
+    type_name = Column(Text)
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+    role = relationship("Roles")
+
+
+
+class RoleHierarchies(Base):
+
+    __tablename__ = "RoleHierarchies"
+
+    # where a role sits in crm's ladder (Admin, CMD, Executive Director ..), 89 rows.
+
+    line_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    name = Column(Text)
+    description = Column(Text)
+    hierarchy_id = Column(Integer)                                           # the rung. lower = more senior
+    role_id = Column(BigInteger, ForeignKey("Roles.line_id"), nullable=False, index=True)   # 100%
+    is_prime = Column(Boolean)
+    is_active = Column(Boolean)
+    is_deleted = Column(Boolean)
+    division_id = Column(BigInteger)
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+    role = relationship("Roles")
+
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# permissions (crm calls them claims). a user holds a claim when their ROLE has it and they are not excluded,
+# or when they are individually included:  (RoleClaims AND NOT UserClaims.is_exclude) OR UserClaims.is_include.
+# most people get a permission through their role - read UserClaims alone and you miss nearly all of them.
+# ---------------------------------------------------------------------------------------------------------------
+
+class Claims(Base):
+
+    __tablename__ = "Claims"
+
+    # every permission crm knows, 297: Manage PC Business Plan BM / View PCBusinessPlan / Manage Planner Approval ..
+
+    line_id = Column(Integer, primary_key=True, autoincrement=False)
+    name = Column(Text)
+    description = Column(Text)
+    is_active = Column(Boolean)
+    group_identifier = Column(Text)
+
+
+
+class RoleClaims(Base):
+
+    __tablename__ = "RoleClaims"
+    __table_args__ = (UniqueConstraint("role_id", "claim_id"),)
+
+    # the permissions a role carries, 995 rows. the main source of a user's permissions.
+
+    line_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    role_id = Column(BigInteger, ForeignKey("Roles.line_id"), nullable=False, index=True)
+    claim_id = Column(Integer, ForeignKey("Claims.line_id"), nullable=False, index=True)
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+    role = relationship("Roles")
+    claim = relationship("Claims")
+
+
+
+class UserClaims(Base):
+
+    __tablename__ = "UserClaims"
+    __table_args__ = (UniqueConstraint("user_id", "claim_id"),)              # 4 pairs repeat in crm; the latest setting is kept on stage
+
+    # a user's individual exceptions to their role: is_include grants a claim the role lacks, is_exclude takes
+    # away one the role gives. 3,320 rows, 539 of them exclusions.
+
+    line_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    user_id = Column(BigInteger, ForeignKey("Users.line_id"), nullable=False, index=True)
+    claim_id = Column(Integer, ForeignKey("Claims.line_id"), nullable=False, index=True)
+    is_include = Column(Boolean)
+    is_exclude = Column(Boolean)
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+    user = relationship("Users")
+    claim = relationship("Claims")
+
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# more data-scope mappings
+# ---------------------------------------------------------------------------------------------------------------
+
+class TechnicalExecutiveSegmentMappings(Base):
+
+    __tablename__ = "TechnicalExecutiveSegmentMappings"
+
+    # the product categories a technical executive covers, 1,025 rows / 99 users. their scope in crm is these
+    # categories AND their customers (UserCustomerMappings). category_id is an item category, shared by many
+    # items, so a soft link to ItemCategories. rows of users crm has deleted are dropped on stage.
+
+    line_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    user_id = Column(BigInteger, ForeignKey("Users.line_id"), nullable=False, index=True)
+    category_id = Column(BigInteger, index=True)                             # ItemCategories.category_id, soft
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+    user = relationship("Users")
+
+
+
+class UserInventoryOrgMappings(Base):
+
+    __tablename__ = "UserInventoryOrgMappings"
+    __table_args__ = (UniqueConstraint("user_id", "inventory_org_id"),)      # 58 repeated pairs in crm, the first kept on stage
+
+    # the warehouses a user works with - the supply side's scope (warehouse, planning, accounts). 3,389 rows / 170 users.
+
+    header_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    user_id = Column(BigInteger, ForeignKey("Users.line_id"), nullable=False, index=True)
+    inventory_org_id = Column(BigInteger, ForeignKey("InventoryOrgs.inventory_org_id"), nullable=False, index=True)   # 4 rows name a warehouse not in the master, dropped
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+    user = relationship("Users")
+    warehouse = relationship("InventoryOrgs")
+
+
+
+class HolidayUserCollectorMappings(Base):
+
+    __tablename__ = "HolidayUserCollectorMappings"
+
+    # despite the name, the direct branch mapping for technical executives, managers and heads. 222 rows, all current.
+
+    header_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    user_id = Column(BigInteger, ForeignKey("Users.line_id"), nullable=False, index=True)
+    collector_id = Column(BigInteger, ForeignKey("Collectors.collector_id"), nullable=False, index=True)
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+    valit_to = Column(DateTime)                                              # crm's spelling of valid_to. null = current (all today)
+
+    user = relationship("Users")
+    collector = relationship("Collectors")
+
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# the business / division head chain: who heads each division, and who receives each segment's approvals.
+# ---------------------------------------------------------------------------------------------------------------
+
+class SpAlertSegmentWorkflowHdrs(Base):
+
+    __tablename__ = "SpAlertSegmentWorkflowHdrs"
+
+    # one row per division (segment2) with its division head, 15 rows. crm spells division "divition".
+
+    header_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    segment2 = Column(Text)                                                  # the division, e.g. Textile & Paper Division
+    divition_head_id = Column(BigInteger, ForeignKey("Users.line_id"), index=True)   # the division head, 100%
+    divition_head_name = Column(Text)
+    divition_head_mail_id = Column(Text)
+    hdr_project_approvl_req = Column(Text)                                   # Yes / No
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+    head = relationship("Users")
+    details = relationship("SpAlertSegmentWorkflowDtls", back_populates="header")
+
+
+
+class SpAlertSegmentWorkflowDtls(Base):
+
+    __tablename__ = "SpAlertSegmentWorkflowDtls"
+
+    # per division: which segment and branches go to which approver (the business head), and for which modules.
+    # 87 rows. the branch list and the module list are comma-separated text - split in views.
+
+    line_id = Column(BigInteger, primary_key=True, autoincrement=False)
+    header_id = Column(BigInteger, ForeignKey("SpAlertSegmentWorkflowHdrs.header_id"), nullable=False, index=True)
+    segment3 = Column(Text)
+    segment4 = Column(Text)
+    collector = Column(Text)                                                 # branch NAMES, comma list
+    collector_id = Column(Text)                                              # branch ids, comma list. the one to use
+    receiver_id = Column(BigInteger, ForeignKey("Users.line_id"), index=True)   # the approver. null where crm names a user it no longer has (10)
+    receiver_name = Column(Text)
+    receiver_mail_id = Column(Text)
+    project_approval_req = Column(Text)                                      # YES / NO per approval kind
+    alert_req = Column(Text)
+    rma_approval_req = Column(Text)
+    purchaserequest = Column(Text)
+    quote_approval_req = Column(Text)
+    businessplan_approval_req = Column(Text)
+    approval_req_module = Column(Text)                                       # module ids, comma list
+    creation_date = Column(DateTime)
+    last_update_date = Column(DateTime)
+
+    header = relationship("SpAlertSegmentWorkflowHdrs", back_populates="details")
+    receiver = relationship("Users")

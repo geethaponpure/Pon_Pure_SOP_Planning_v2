@@ -11,6 +11,7 @@ UPSERT_TABLES = {"Collectors", "MarketCircles", "CustomerMasters", "CustomerSite
                  "ItemMasters", "ItemCategories", "DeliveryFroms", "QuotationStatus", 
                  "JourneyCalendars", "ApSuppliers", "ApprovalStatus", "ApTermsTls", "ApSupplierSitesAlls", "InventoryOrgs",
                  "LotSubinventoryRestriction", "CriticalStockConfigs",
+                 "RoleTypes", "RoleConfigs", "RoleHierarchies", "Claims",
                  "Users", "Roles", "ArCustomers", "Reasons", "FinancialYears", "TempItemmasters", "JcWeeklyCalendars"}
 
 
@@ -33,7 +34,9 @@ SNAPSHOT_TABLES = {"SocPendingDetails", "Dispatches", "Schedules",
                    "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings",
                    "tempcustomers", "SPBusinessPlanActualSales", "SCBusinessPlanProjections", "PcBusinessPlanReopens", "SCBusinessPlanLogs",
                    "SCLeadTargets", "SCLeadTargetJcDtls", "LeadDetails", "LeadProducts",
-                   "BIRawMaterialConsumptions", "CriticalStocks"}
+                   "BIRawMaterialConsumptions", "CriticalStocks",
+                   "RoleClaims", "UserClaims", "TechnicalExecutiveSegmentMappings", "UserInventoryOrgMappings",
+                   "HolidayUserCollectorMappings", "SpAlertSegmentWorkflowHdrs", "SpAlertSegmentWorkflowDtls"}
 
 
 
@@ -123,6 +126,43 @@ STAGE_FIXES = {
             WHERE NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.user_id)''',
         '''DELETE FROM stage
             WHERE NOT EXISTS (SELECT 1 FROM "MarketCircles" m WHERE m.header_id = stage.market_circle_id)''',
+    ],
+    "TechnicalExecutiveSegmentMappings": [
+        # 38 rows belong to users crm has deleted: a mapping with no user means nothing
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.user_id)''',
+    ],
+    "UserInventoryOrgMappings": [
+        # 58 (user, warehouse) pairs are repeated. keep the first so the pair is unique
+        "DELETE FROM stage a USING stage b WHERE a.user_id = b.user_id AND a.inventory_org_id = b.inventory_org_id AND a.header_id > b.header_id",
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.user_id)''',
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "InventoryOrgs" w WHERE w.inventory_org_id = stage.inventory_org_id)''',
+    ],
+    "UserClaims": [
+        # 4 (user, claim) pairs are repeated. keep the LATEST: a later include / exclude replaces the earlier one
+        "DELETE FROM stage a USING stage b WHERE a.user_id = b.user_id AND a.claim_id = b.claim_id AND a.line_id < b.line_id",
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.user_id)''',
+    ],
+    "RoleClaims": [
+        "DELETE FROM stage a USING stage b WHERE a.role_id = b.role_id AND a.claim_id = b.claim_id AND a.line_id > b.line_id",
+    ],
+    "HolidayUserCollectorMappings": [
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.user_id)''',
+        '''DELETE FROM stage
+            WHERE NOT EXISTS (SELECT 1 FROM "Collectors" c WHERE c.collector_id = stage.collector_id)''',
+    ],
+    "SpAlertSegmentWorkflowHdrs": [
+        '''UPDATE stage SET divition_head_id = NULL
+            WHERE NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.divition_head_id)''',
+    ],
+    "SpAlertSegmentWorkflowDtls": [
+        # 10 rows name an approver crm no longer has: keep the row, blank the approver
+        '''UPDATE stage SET receiver_id = NULL
+            WHERE NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.receiver_id)''',
     ],
     "UserCollectorMappings": [
         # crm holds the same (user, branch) pair up to 48 times, inserted in the same second. keep the first so the pair is unique
@@ -665,15 +705,19 @@ LOAD_LEVELS = [
 #================================================ LEVEL 0 ===========================================================
     ["Collectors", "CustomerMasters", "ItemMasters", "DeliveryFroms",
      "QuotationStatus", "JourneyCalendars", "JcWeeklyCalendars", "ApSuppliers", "ApprovalStatus", "ApTermsTls", "Users", "Roles", "Reasons", "FinancialYears",
-     "BIRawMaterialConsumptions", "LotSubinventoryRestriction", "CriticalStockConfigs"],   # no parents (Users only points at itself; the consumption feed carries codes, not ids)
+     "BIRawMaterialConsumptions", "LotSubinventoryRestriction", "CriticalStockConfigs",
+     "RoleTypes", "Claims"],   # no parents (Users only points at itself; the consumption feed carries codes, not ids)
 
 #================================================ LEVEL 1 ===========================================================
     ["MarketCircles", "ItemCategories", "PurchaseRequisitionPtoPts", "InventoryOrgs", "ApSupplierSitesAlls", "CriticalStocks",
+     "RoleConfigs", "RoleHierarchies", "RoleClaims", "UserClaims", "TechnicalExecutiveSegmentMappings",
+     "HolidayUserCollectorMappings", "SpAlertSegmentWorkflowHdrs",
      "UserRoles", "UserCollectorMappings", "UserCustomerMappings", "CollectorMailMappings", "TechnicalUserSegmentMappings",
      "ArCustomers", "SPBusinessPlanActualSales", "SCBusinessPlanProjections", "TempItemmasters"],   # need level 0 (InventoryOrgs -> Collectors, the user mappings -> Users / Roles / Collectors / CustomerMasters)
 
 #================================================ LEVEL 2 ===========================================================
     ["CustomerSites", "BiPoDetails", "BiGrnDetails", "PurchaseRequisitionHdrs", "BiStockDetail",
+     "UserInventoryOrgMappings", "SpAlertSegmentWorkflowDtls",
      "ItemInventoryOrgMappings", "BiCollectorInventoryOrgMapping", "UserMarketCircleMappings", "tempcustomers", "PcBusinessPlanReopens"],                                                   # need MarketCircles / InventoryOrgs / TempItemmasters. BiStockDetail is large: 4 inner workers
 
 #================================================ LEVEL 3 ===========================================================

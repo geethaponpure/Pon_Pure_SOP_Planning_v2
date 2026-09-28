@@ -40,6 +40,7 @@ class InventoryOrgs(Base):
     is_port = Column(Boolean)                                                # 38 port warehouses. null = not set
     is_methanol = Column(Boolean)                                            # 38. null = not set
     repackwh_enable = Column(Integer)                                        # 1 = repack warehouse (62). null = not set
+    whapproval_planner_enable = Column(Boolean)                              # the warehouse's approvals go through a planner
 
     stock = relationship("BiStockDetail", back_populates="warehouse")
     collector = relationship("Collectors")

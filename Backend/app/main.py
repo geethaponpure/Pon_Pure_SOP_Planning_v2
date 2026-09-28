@@ -17,7 +17,10 @@ from .models.purchase_master import (ApprovalStatus, ApTermsTls, ApSuppliers, Ap
 from .models.inventory_master import (BiStockDetail, InventoryOrgs, ItemInventoryOrgMappings, BiCollectorInventoryOrgMapping,
                                       LotSubinventoryRestriction, CriticalStockConfigs, CriticalStocks)
 from .models.user_and_scope import (Users, Roles, UserRoles, UserMarketCircleMappings, UserCollectorMappings,
-                                    UserCustomerMappings, CollectorMailMappings, TechnicalUserSegmentMappings)
+                                    UserCustomerMappings, CollectorMailMappings, TechnicalUserSegmentMappings,
+                                    RoleTypes, RoleConfigs, RoleHierarchies, Claims, RoleClaims, UserClaims,
+                                    TechnicalExecutiveSegmentMappings, UserInventoryOrgMappings,
+                                    HolidayUserCollectorMappings, SpAlertSegmentWorkflowHdrs, SpAlertSegmentWorkflowDtls)
 from .models.manufacturing import BIRawMaterialConsumptions
 from .models.ingest import IngestFiles, IngestRejects, RAW_MODELS
 from .repositories.views import create_views

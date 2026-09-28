@@ -26,7 +26,7 @@ psg_async_url = URL.create(
 
 
 engine = create_async_engine(
-    url=psg_async_url, echo=False, future=True,
+    url=psg_async_url, echo=True, future=True,
     # every pooled connection starts in our schema, so plain sql ("ingest_files") works from any session
     connect_args={"server_settings": {"search_path": settings.POSTGRES_SCHEMA,
                                       "lock_timeout": settings.PG_LOCK_TIMEOUT}},

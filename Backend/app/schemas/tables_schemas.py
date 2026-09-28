@@ -1111,6 +1111,7 @@ TABLES_COLUMNS = {
         "is_port",                # 38 port warehouses. null = not set
         "is_methanol",            # 38. null = not set
         "RepackWh_Enable",        # 1 = repack warehouse (62). null = not set
+        "whapproval_planner_enable",   # the warehouse's approvals go through a planner
         # skipped: location_id (0 match the 35 row city master, a different id space), address, lat/long,
         # creation/last_update_date (185 rows stamped the same second, crm rewrites the table), workflow config flags
     ],
@@ -1233,6 +1234,93 @@ TABLES_COLUMNS = {
 
 #-------------------------------------------- Users, roles & data-scope mappings --------------------------------------------
 "user_and_scope" : {
+
+    "RoleTypes": [                # the family of each role, 20 rows. upsert, level 0
+        "line_id", "name", "description", "hierarchy_id", "is_prime", "is_active", "is_deleted",
+        "creation_date", "last_update_date",
+    ],
+
+    "RoleConfigs": [              # which scope rule crm applies to a role, 31 rows. upsert, level 1
+        "header_id",
+        "role_id",                # -> Roles, 100%
+        "role_name",
+        "config_type_id",         # 1 User / 2 Collector / 3 Market Circle / 4 All Collector. use this, the name has a typo
+        "type_name",
+        "creation_date", "last_update_date",
+    ],
+
+    "RoleHierarchies": [          # where a role sits in crm's ladder, 89 rows. upsert, level 1
+        "line_id", "name", "description", "hierarchy_id",
+        "role_id",                # -> Roles, 100%
+        "is_prime", "is_active", "is_deleted", "division_id",
+        "creation_date", "last_update_date",
+    ],
+
+    "Claims": [                   # every permission, 297 rows. upsert, level 0
+        "line_id", "name", "description", "is_active", "group_identifier",
+    ],
+
+    "RoleClaims": [               # the permissions a role carries, 995 rows. snapshot, level 1
+        "line_id",
+        "role_id",                # -> Roles
+        "claim_id",               # -> Claims
+        "creation_date", "last_update_date",
+    ],
+
+    "UserClaims": [               # a user's exceptions to their role, 3,320 rows. snapshot, level 1
+        "line_id",
+        "user_id",                # -> Users, 100%
+        "claim_id",               # -> Claims, 100%
+        "is_include",             # grants a claim the role lacks
+        "is_exclude",             # takes away one the role gives (539)
+        "creation_date", "last_update_date",
+    ],
+
+    "TechnicalExecutiveSegmentMappings": [   # product categories a technical executive covers, 1,025 rows. snapshot, level 1
+        "line_id",
+        "user_id",                # -> Users. 38 rows of deleted users dropped
+        "category_id",            # ItemCategories.category_id, soft
+        "creation_date", "last_update_date",
+    ],
+
+    "UserInventoryOrgMappings": [  # warehouses a user works with, 3,389 rows / 170 users. snapshot, level 2
+        "header_id",
+        "user_id",                # -> Users, 100%
+        "inventory_org_id",       # -> InventoryOrgs. 4 unknown warehouses dropped
+        "creation_date", "last_update_date",
+    ],
+
+    "HolidayUserCollectorMappings": [   # direct branch mapping for technical staff, 222 rows. snapshot, level 1
+        "header_id",
+        "user_id",                # -> Users, 100%
+        "collector_id",           # -> Collectors, 100%
+        "creation_date", "last_update_date",
+        "Valit_to",               # crm's spelling of valid_to
+    ],
+
+    "SpAlertSegmentWorkflowHdrs": [   # division heads, 15 rows. snapshot, level 1
+        "header_id",
+        "segment2",               # the division
+        "divition_head_id",       # -> Users, 100%. crm's spelling
+        "divition_head_name", "divition_head_mail_id", "hdr_project_approvl_req",
+        "creation_date", "last_update_date",
+    ],
+
+    "SpAlertSegmentWorkflowDtls": [   # segment / branch -> approver per division, 87 rows. snapshot, level 2
+        "line_id",
+        "header_id",              # -> SpAlertSegmentWorkflowHdrs
+        "segment3", "segment4",
+        "collector",              # branch names, comma list
+        "collector_id",           # branch ids, comma list
+        "receiver_id",            # -> Users. 10 unknown receivers loaded blank
+        "receiver_name", "receiver_mail_id",
+        "project_approval_req", "alert_req", "rma_approval_req", "PurchaseRequest",
+        "quote_approval_req", "businessplan_approval_req",
+        "approval_req_module",    # module ids, comma list
+        "creation_date", "last_update_date",
+        # skipped: th_user_id (0 on every row), created_by / last_updated_by
+    ],
+
     "Users": [                    # everyone with a crm login, 1,370 rows. upsert, level 0
         "line_id",                # pk. deleted users leave gaps, we keep our copy for history
         "name",                   # always filled. first / last name are null on 70%, not taken
@@ -1281,9 +1369,10 @@ TABLES_COLUMNS = {
         "valid_from",             # always filled
         "valid_to",               # null = current (237). re-assignment to the same circle = new row, old one closed. history kept, "current" is a view rule
         "is_primary",             # 245 true
+        "cross_marketcircle_segmentaccess_flag",   # crm's scope rule reads it (see dim_role). false on all today, loaded so scope follows if crm turns it on
         "creation_date",          # null on 145
         "last_update_date",
-        # skipped: cross_marketcircle_segmentaccess_flag (false on all), created_by / last_updated_by
+        # skipped: created_by / last_updated_by
     ],
 
     "UserCollectorMappings": [    # which branches a back office user may see (coordinators, accounts, commercial). 9,046 rows / 202 users, avg 44 branches. snapshot, level 1
