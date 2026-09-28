@@ -1616,3 +1616,82 @@ SELECT (SELECT round(sum(critical_stock_value)/1e7, 2) FROM v_critical_stock_pro
 SELECT warehouse_name, item_name, available_to_promise, daily_rate, rate_basis, round(cover_days_available) AS days
 FROM v_stock_cover WHERE cover_status = 'under 15 days' ORDER BY cover_days_available LIMIT 20;
 ```
+
+
+---
+
+## user_and_scope - who sees what  `10_user_and_scope.sql`
+
+The tool controls access through its own admin-managed grants: **page permissions** (which screens) and **data scope** (which rows). These views are the **seed** for those grants. They reproduce CRM's rules exactly, and every row says which rule produced it, so a seeded grant can always be traced back. They enforce nothing, and they never hard-wire the tool's policy.
+
+```text
+                       user_and_scope
+                             │
+        ┌────────────────────┼─────────────────────┐
+        │                    │                     │
+   who people are       which rows            which screens
+        │                    │                     │
+   dim_role            v_user_market_circle   v_user_capability
+   dim_user            v_user_customer_scope
+   v_user_hierarchy    v_customer_ownership
+   v_branch_management v_technical_scope
+                       v_user_warehouse_scope
+                       v_segment_head
+```
+
+### How CRM decides - read from its own code
+
+| role | sees | how |
+| --- | --- | --- |
+| sales executive | their own market circles | direct mapping |
+| branch manager | the circles of everyone reporting to them | the reporting line |
+| regional manager | two levels of reports | the reporting line |
+| technical executive | their customers **and** the product categories they cover | two mappings |
+| technical manager / head | product segments, sometimes limited to listed branches | segment mapping |
+| business head | segments and branches on the approval workflow | segment workflow |
+| commercial, accounts, coordinators | a branch list | branch mapping |
+| roles configured "all branches" | everything | CRM chose that |
+| **roles with no configuration** | **everything - CRM's default** | nobody chose it |
+
+- **Unconfigured roles are a policy question, not a rule to copy.** CRM configures only about thirty of its hundred-odd roles and lets the rest see everything. `dim_user.is_unconfigured` marks them; the tool's admin decides what they get.
+- **Permissions come mostly from the role.** A user holds a permission when their role carries it and they are not individually excluded, or when they are individually included. Counting individual grants alone understates the approvers roughly a hundredfold.
+
+### Who people are - dim_role, dim_user, v_user_hierarchy, v_branch_management
+
+- `dim_role` reads each role's rule from CRM's own configuration (`RoleConfigs`), not from a list we keep.
+- **dummy users are placeholder managers.** CRM puts them in the reporting line and walks through them; so does `v_user_hierarchy`. They are kept and flagged, never granted anything.
+- `has_manager_issue` flags active people with no manager or an inactive one. It is a data-quality flag, not a blocker: most of them are warehouse, lab and back-office staff whose scope never uses the reporting line.
+- `v_branch_management` lists who each branch's table names as branch manager, regional manager, commercial manager, branch controller, executive director, general manager and coordinators.
+
+### Which rows - customers
+
+- **a customer belongs to the circle of its active bill-to site**, never to the circle on the customer master.
+- **a manager covers every report's circles, placeholders included.** CRM parks a vacant territory on a placeholder sales executive, and the branch manager above that placeholder still covers it. Skip placeholders and every vacant territory silently falls out of scope.
+- a branch or regional manager with no active reports falls back to the branches that name them on the branch table.
+- a technical executive's customers are matched by the customer's header id, current rows only.
+- `v_customer_ownership` keeps unowned customers visible, and says why: owned, vacant territory, held by another role, held by someone who has left, circle held by no one, or no circle at all. Nearly all are reachable by someone's scope; the few that are not can only be reached by roles that see everything - the set an admin will want to assign.
+- `v_user_customer_scope` explodes branch-list users to one row per customer, which makes it large. Seed their grants at **branch** level, not customer level.
+
+### Which rows - supply and approvals
+
+- `v_user_warehouse_scope`: the warehouses each person works with. For many warehouse and planning staff this is their only row rule. It also says whether the warehouse routes approvals through a planner and whether the person holds the planner-approval permission.
+- `v_segment_head`: the business and division head chain - for each division, segment and branch, who approves and for what. The only place CRM records business-head scope; the business plan goes executive → branch manager → the business head named here → the division head. "ALL COLLECTOR" rows cover every branch.
+
+### Which screens - v_user_capability
+
+- every permission a user holds or was refused, with `granted_by`: role, individual grant, or role excluded for this user.
+- `is_planning_permission` marks the business-plan, yearly-plan and planner-approval permissions that decide who may approve a plan.
+
+**Quick checks** (pgAdmin, after `SET search_path TO ponpure_planner;`)
+
+```sql
+-- scope rules across active people
+SELECT scope_rule, count(*) FROM dim_user WHERE is_active AND NOT is_dummy GROUP BY 1 ORDER BY 2 DESC;
+
+-- who can approve a plan, and how they got the permission
+SELECT permission, granted_by, count(*) FROM v_user_capability
+WHERE is_planning_permission AND is_granted GROUP BY 1, 2 ORDER BY 1, 3 DESC;
+
+-- customers with no active owner, and why
+SELECT ownership_status, count(DISTINCT customer_hdr_id) FROM v_customer_ownership GROUP BY 1 ORDER BY 2 DESC;
+```

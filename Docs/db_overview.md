@@ -105,6 +105,12 @@ Stock on hand, the warehouses, and which products belong in which warehouse.
 - **LotSubinventoryRestriction** - CRM's own list of storage areas whose stock may not be sold: quarantine, returns, rework and the like.
 - **CriticalStocks** - CRM's aged-stock follow-up: once a cycle, the products whose stock has sat too long, with the owners' remarks and deadlines.
 - **CriticalStockConfigs** - how old, and how valuable, stock must be before CRM flags it, per segment.
+- **RoleTypes, RoleConfigs, RoleHierarchies** - the family each role belongs to, which scope rule CRM applies to it, and where it ranks.
+- **Claims, RoleClaims, UserClaims** - every permission, the permissions each role carries, and each person's individual exceptions.
+- **TechnicalExecutiveSegmentMappings** - the product categories each technical executive covers.
+- **UserInventoryOrgMappings** - the warehouses each person works with.
+- **HolidayUserCollectorMappings** - despite the name, the branches each technical person covers.
+- **SpAlertSegmentWorkflowHdrs / Dtls** - who heads each division, and who approves each segment and branch.
 - **ItemInventoryOrgMappings** - which products may be stocked in which warehouse.
 - **BiCollectorInventoryOrgMapping** - which warehouse serves which branch.
 
