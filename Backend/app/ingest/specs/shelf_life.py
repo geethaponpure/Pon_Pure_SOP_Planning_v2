@@ -11,7 +11,8 @@ SHELF_LIFE = FileSpec(
     mode="replace",
     raw_table="raw_shelf_life",
     strict_headers=True,                          # a system extract: a missing column is a wrong export, not n/a
-    model_sql=("08_ingest_models.sql",),          # views over this table; plain views, nothing to refresh
+    model_sql=("08_ingest_models.sql", "09_inventory_master.sql"),   # 09: fact_stock_lot.expires_on reads this,
+                                                  # so its matviews refresh on upload, not at the next etl
     columns=(
         Col("Itemcode", "item_code", required=True,
             help="The CRM item code of the finished product. One row per item.", example="MDBULKVOFSC00006"),

@@ -3,7 +3,7 @@
 Runs against a live server over plain http (standard library only, no pytest / requests needed):
 
     python -m uvicorn app.main:app --port 8765          # in one terminal, from Backend/
-    python tests/test_ingest_api.py --reset             # in another, from Backend/
+    python tests/ingestion/test_ingest_api.py --reset   # in another, from Backend/
 
 --reset empties the ingest tables (raw_*, ingest_rejects, ingest_files) and Backend/uploads first, because a
 file that is already loaded is refused as a duplicate. Test data: a folder with Correct/ and Dummy/ (broken copies).
@@ -20,13 +20,14 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))             # Backend/ on the path
+BACKEND = Path(__file__).resolve().parents[2]                           # Backend/ (tests/ingestion/ is two below)
+sys.path.insert(0, str(BACKEND))
 from openpyxl import load_workbook                                       # noqa: E402
 
 from app.core.database import get_postgres_cursor                         # noqa: E402
 from app.ingest.registry import FILE_SPECS                                # noqa: E402
 
-UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
+UPLOAD_DIR = BACKEND / "uploads"
 FILES = {"bom_extract": "BOM Extract.xlsx",
          "shelf_life": "FG_Shelf_Life_days_QMS.xlsx",
          "cycle_time": "PPS Products Cycle Time 05-02-2026.xlsx"}
@@ -72,6 +73,30 @@ def upload(base: str, content: bytes | None, filename: str, fields: dict):
     status, _, raw = request("POST", f"{base}/ingest/upload", body,
                              {"Content-Type": f"multipart/form-data; boundary={boundary}"})
     return status, as_json(raw), time.time() - t
+
+
+def upload_and_wait(base: str, content: bytes, filename: str, fields: dict, timeout: float = 180):
+    """Upload, then poll GET /ingest/files/{id} until done - what the ui does. Returns the upload's http
+    status, the final status body (plus the problem list for a rejected file) and the seconds taken.
+    A refused upload (4xx, nothing accepted) comes back as it was."""
+    t = time.time()
+    status, accepted, _ = upload(base, content, filename, fields)
+    if status != 202 or not isinstance(accepted, dict):
+        return status, accepted, time.time() - t
+    accepted_ok = accepted.get("status") == "received" and accepted.get("poll") == f"/ingest/files/{accepted['file_id']}"
+    while time.time() - t < timeout:
+        s, _, raw = request("GET", f"{base}/ingest/files/{accepted['file_id']}")
+        body = as_json(raw)
+        if s == 200 and body.get("done"):
+            break
+        time.sleep(0.25)
+    else:
+        return status, {"status": "timeout", "file_id": accepted["file_id"]}, time.time() - t
+    if body["status"] == "rejected":
+        _, _, raw = request("GET", f"{base}{body['rejects']}")
+        body["problems"] = as_json(raw).get("problems", [])
+    body["_accepted_ok"] = accepted_ok                 # the immediate 202 answer had status + poll link
+    return status, body, time.time() - t
 
 
 # ---------------------------------------------------------------- database, read-only except --reset
@@ -139,16 +164,17 @@ def main() -> int:
     expected_rows = {"bom_extract": 50927, "shelf_life": 803, "cycle_time": 148}
     good_ids = {}
     for key, name in FILES.items():
-        status, body, secs = upload(base, (good / name).read_bytes(), name,
+        status, body, secs = upload_and_wait(base, (good / name).read_bytes(), name,
                                     {"uploaded_by": "api-test", "file_type": key})
-        ok = status == 201 and isinstance(body, dict) and body.get("status") == "published"
-        check(f"{key}: 201 published ({secs:.1f}s)", ok, f"status {status}: {str(body)[:200]}")
+        ok = status == 202 and isinstance(body, dict) and body.get("status") == "published"
+        check(f"{key}: published ({secs:.1f}s)", ok, f"status {status}: {str(body)[:200]}")
         if ok:
             good_ids[key] = body["file_id"]
             check(f"{key}: {expected_rows[key]} rows loaded, 0 rejected",
                   body.get("rows_loaded") == expected_rows[key] and body.get("rows_rejected") == 0,
                   f"loaded {body.get('rows_loaded')}, rejected {body.get('rows_rejected')}")
             check(f"{key}: is current", body.get("is_current") is True)
+            check(f"{key}: answered 202 'received' at once, with a poll link", body.get("_accepted_ok") is True)
     check("cycle_time: plant recorded as the scope",
           db("SELECT period_key FROM ingest_files WHERE file_id = %s", (good_ids.get("cycle_time", -1),))
           == [("PSM - Thervoykandigai MFG",)])
@@ -187,15 +213,15 @@ def main() -> int:
     # ------------------------------------------------ the file is read and refused
     print("\nPOST /ingest/upload - failed (file-level problem)")
     name = FILES["shelf_life"]
-    status, body, _ = upload(base, (good / name).read_bytes(), name, {"uploaded_by": "api-test", "file_type": "bom_extract"})
-    ok = status == 201 and isinstance(body, dict) and body.get("status") == "failed"
+    status, body, _ = upload_and_wait(base, (good / name).read_bytes(), name, {"uploaded_by": "api-test", "file_type": "bom_extract"})
+    ok = status == 202 and isinstance(body, dict) and body.get("status") == "failed"
     check("shelf life file sent as bom_extract -> failed", ok, f"status {status}: {str(body)[:200]}")
     if ok:
         check("  names the missing columns", "ORGANIZATION_CODE" in (body.get("error") or ""), body.get("error", "")[:120])
 
     name = FILES["bom_extract"]
-    status, body, _ = upload(base, (bad / name).read_bytes(), name, {"uploaded_by": "api-test", "file_type": "bom_extract"})
-    ok = status == 201 and isinstance(body, dict) and body.get("status") == "failed"
+    status, body, _ = upload_and_wait(base, (bad / name).read_bytes(), name, {"uploaded_by": "api-test", "file_type": "bom_extract"})
+    ok = status == 202 and isinstance(body, dict) and body.get("status") == "failed"
     check("BOM without the BASIS_TYPE column -> failed", ok, f"status {status}: {str(body)[:200]}")
     if ok:
         check("  says BASIS_TYPE is missing", "BASIS_TYPE" in (body.get("error") or ""), body.get("error", "")[:120])
@@ -204,8 +230,8 @@ def main() -> int:
     # a workbook last saved by a script: formulas without results
     wb = load_workbook(good / FILES["cycle_time"])
     buf = io.BytesIO(); wb.save(buf)
-    status, body, _ = upload(base, buf.getvalue(), "cycle_saved_by_script.xlsx", {"uploaded_by": "api-test", "file_type": "cycle_time"})
-    ok = status == 201 and isinstance(body, dict) and body.get("status") == "failed"
+    status, body, _ = upload_and_wait(base, buf.getvalue(), "cycle_saved_by_script.xlsx", {"uploaded_by": "api-test", "file_type": "cycle_time"})
+    ok = status == 202 and isinstance(body, dict) and body.get("status") == "failed"
     check("cycle time saved by a script -> failed", ok, f"status {status}: {str(body)[:200]}")
     if ok:
         check("  tells the user to save it in Excel", "Excel" in (body.get("error") or ""), body.get("error", "")[:120])
@@ -218,8 +244,8 @@ def main() -> int:
                                                                   "CYCLE TIME EQUIPMENT WITH CLEANING(IN HRS)",
                                                                   "Equipment ID"})]:
         name = FILES[key]
-        status, body, _ = upload(base, (bad / name).read_bytes(), name, {"uploaded_by": "api-test", "file_type": key})
-        ok = status == 201 and isinstance(body, dict) and body.get("status") == "rejected"
+        status, body, _ = upload_and_wait(base, (bad / name).read_bytes(), name, {"uploaded_by": "api-test", "file_type": key})
+        ok = status == 202 and isinstance(body, dict) and body.get("status") == "rejected"
         check(f"{key}: rejected", ok, f"status {status}: {str(body)[:200]}")
         if not ok:
             continue
@@ -234,6 +260,26 @@ def main() -> int:
               body.get("rows_loaded") in (None, 0) and current_file(key) == good_ids.get(key))
 
     # ------------------------------------------------ the reject list endpoint
+    print("\nGET /ingest/files/{file_id}  (poll)")
+    if "shelf_life" in good_ids:
+        status, _, raw = request("GET", f"{base}/ingest/files/{good_ids['shelf_life']}")
+        body = as_json(raw)
+        check("published upload -> 200, done, published",
+              status == 200 and isinstance(body, dict) and body.get("done") is True and body.get("status") == "published",
+              f"status {status}: {str(body)[:160]}")
+        check("  carries the counts and who uploaded it",
+              isinstance(body, dict) and body.get("rows_loaded") == 803 and body.get("uploaded_by") == "api-test")
+    if "shelf_life" in rejected:
+        status, _, raw = request("GET", f"{base}/ingest/files/{rejected['shelf_life']}")
+        body = as_json(raw)
+        check("rejected upload -> done, with a link to its problems",
+              isinstance(body, dict) and body.get("done") is True
+              and body.get("rejects") == f"/ingest/files/{rejected['shelf_life']}/rejects", str(body)[:160])
+    status, _, _ = request("GET", f"{base}/ingest/files/999999")
+    check("unknown file_id -> 404", status == 404, f"status {status}")
+    status, _, _ = request("GET", f"{base}/ingest/files/abc")
+    check("file_id not a number -> 422", status == 422, f"status {status}")
+
     print("\nGET /ingest/files/{file_id}/rejects")
     if "shelf_life" in rejected:
         status, _, raw = request("GET", f"{base}/ingest/files/{rejected['shelf_life']}/rejects")

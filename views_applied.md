@@ -1567,6 +1567,7 @@ What we hold, whether it can be sold, how old it is, and how long it will last.
 
 - **two different ages.** Lot age runs from the lot's first receipt into the business; days at warehouse runs from when it reached *this* warehouse. A lot can be old and freshly arrived after a transfer - four lots in ten reached their current warehouse more than a month after receipt.
 - `arrived_before_history` marks lots already here when the stock history began; their days at warehouse is a floor.
+- `expires_on` refreshes as soon as a BOM or shelf-life file is uploaded, not at the next loader run.
 - **expiry is known only for manufactured goods**: directly for bulk items, and through the bill of materials for packed ones (`v_item_shelf_life_resolved` walks it down). Traded and imported goods have no shelf life recorded anywhere, so their expiry stays empty - by decision.
 
 ### fact_stock_movement - what changed overnight
@@ -1587,9 +1588,10 @@ What we hold, whether it can be sold, how old it is, and how long it will last.
 | answers | how many days the stock lasts |
 
 - built on **available to promise**: sellable stock minus the open orders already promised against it. Open orders are about a third of sellable stock, so cover on raw stock overstates badly.
-- **measured against the right rate.** Where a warehouse sells, the rate is its customer dispatches. Plants and ports mostly feed other warehouses rather than selling, so for them the rate is everything that leaves - otherwise their working stock would look idle. `rate_basis` says which was used.
+- **measured against the faster rate**: customer dispatches, or everything that leaves the warehouse, whichever is higher. Plants and ports feed other warehouses rather than selling, and many branches pass an item on to other branches - judged on sales alone their stock would look far longer-lasting than it is. `rate_basis` says which won.
 - incoming counts stock in transit to the warehouse and live purchase orders; abandoned purchase orders are left out.
-- open orders include future-dated ones, so **over-promised** can be a scheduling question rather than a shortage.
+- **over-promised** means orders due by today exceed what is on the shelf - a real shortage, `over_promised_now`. **over-promised by future orders** means only later orders exceed it, which stock still to arrive may cover. Look at the first kind first.
+- `sellable_expired_qty` shows stock in sellable areas whose lots are past their shelf life. It stays inside sellable stock until quality says whether a retest extends the life.
 
 ### fact_critical_stock / v_critical_stock_product - CRM's own aged-stock follow-up
 

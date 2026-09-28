@@ -1,6 +1,7 @@
+import logging
 from pathlib import Path
 from uuid import uuid4
-from fastapi import HTTPException, UploadFile, status
+from fastapi import HTTPException, UploadFile, status, BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlalchemy import text
 from app.ingest.excel_reader import is_xlsx
@@ -10,30 +11,34 @@ from app.ingest.runner import run_ingest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+log = logging.getLogger(__name__)
+
 UPLOAD_DIR = Path(__file__).resolve().parents[2] / "uploads"      # Backend/uploads, whatever the working dir
 UPLOAD_DIR.mkdir(exist_ok=True)
 TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "template"
 
 
-async def ingest_excel(path: str, file_type: str, uploaded_by: str, db: AsyncSession,
-                       original_name: str | None = None) -> dict:
-    """Register the saved file and run the pipeline on the request's pooled session."""
+async def ingest_excel(path: str, file_type: str, uploaded_by: str, db: AsyncSession, original_name: str | None = None) -> int:
+    """Register the saved file."""
+
     spec = get_spec(file_type)
+
     try:
         file_id = await register_file(db, spec, path, uploaded_by, original_name=original_name)
     except DuplicateFileError as e:
-        Path(path).unlink(missing_ok=True)          # refused: no ingest_files row points at the saved copy
+        Path(path).unlink(missing_ok=True)
         raise HTTPException(status.HTTP_409_CONFLICT, detail={"message": str(e), "file_id": e.file_id})
     except UploadError as e:
         Path(path).unlink(missing_ok=True)
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
     except Exception:
-        Path(path).unlink(missing_ok=True)          # e.g. the database is down: nothing registered either
+        Path(path).unlink(missing_ok=True)
         raise
-    return await run_ingest(file_id, path, db)      # from here the file is kept: it is the record of the upload
+
+    return file_id
 
 
-async def inject_excel_to_psg(file: UploadFile, uploaded_by: str, file_type: str, db:AsyncSession) -> dict:
+async def inject_excel_to_psg(file: UploadFile, uploaded_by: str, file_type: str, db:AsyncSession, background:BackgroundTasks) -> dict:
     """run the pipeline and store the file in backend"""
 
     uploaded_by = (uploaded_by or "").strip().lower()              # "   " is not a name
@@ -54,16 +59,43 @@ async def inject_excel_to_psg(file: UploadFile, uploaded_by: str, file_type: str
                             detail="Not an .xlsx file. Open it in Excel, Save As Excel Workbook (.xlsx), "
                                    "and upload that.")
 
-    result = await ingest_excel(str(path), file_type, uploaded_by, db, original_name)
+    file_id = await ingest_excel(str(path), file_type, uploaded_by, db, original_name)
 
-    if result["status"] == "rejected":
-        rejects = await fetch_rejects(result["file_id"], db)
-        result["problems"] = rejects["problems"]
-        result["problems_shown"] = rejects["problems_shown"]
+    background.add_task(run_in_background, file_id, str(path))
+
+    return {"file_id": file_id, "status": "received", "poll": f"/ingest/files/{file_id}"}
+
+
+
+async def run_in_background(file_id: int, path: str):
+    """The pipeline after the response is sent. run_ingest is async: await it (run_in_threadpool would only
+    create the coroutine and never run it). No session is passed, so it opens its own pooled one - the
+    request's get_db session is already closed by now."""
+    try:
+        await run_ingest(file_id, path)
+    except Exception:
+        log.exception("background ingest %s crashed", file_id)   # run_ingest has already marked it failed
+
+
+
+async def fetch_file_status(file_id: int, db: AsyncSession) -> dict:
+    """Where an upload is now. The ui polls this until done is true."""
     
+    FINAL = ("published", "rejected", "failed")
+    
+    row = (await db.execute(text("""
+        SELECT file_id, file_type, original_name, uploaded_by, uploaded_at, period_key,
+               status, step, rows_read, rows_deduped, rows_loaded, rows_rejected, error, is_current
+        FROM ingest_files WHERE file_id = :id"""), {"id": file_id})).mappings().first()
+    await db.commit()                                # ends the read, the pooled connection goes back clean
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"file {file_id} not found")
+
+    result = dict(row)
+    result["done"] = result["status"] in FINAL
+    if result["status"] == "rejected":
+        result["rejects"] = f"/ingest/files/{file_id}/rejects"      # the ui fetches the row list from here
     return result
-
-
 
 
 async def get_template(file_type:str)->FileResponse:

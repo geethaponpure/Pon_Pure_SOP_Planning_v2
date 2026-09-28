@@ -74,7 +74,7 @@ WITH RECURSIVE walk AS (
     SELECT w.item_code, b.component_item_code, w.depth + 1
     FROM walk w
     JOIN v_bom_line b ON b.assembly_item_code = w.reached AND b.is_primary
-    WHERE w.depth < 6
+    WHERE w.depth < 10
 ),
 via_bom AS (
     -- the nearest level that reaches an item with a shelf life; the shortest life there, to be safe
@@ -331,7 +331,7 @@ SELECT s.collector_id,
        s.value_                                        AS dispatched_value,
        s.quantity / nullif(sum(s.quantity) OVER (PARTITION BY s.collector_id), 0) AS quantity_share,
        s.value_ / nullif(sum(s.value_) OVER (PARTITION BY s.collector_id), 0)     AS value_share,
-       row_number() OVER (PARTITION BY s.collector_id ORDER BY s.quantity DESC) = 1 AS is_main_warehouse,
+       row_number() OVER (PARTITION BY s.collector_id ORDER BY s.value_ DESC NULLS LAST) = 1 AS is_main_warehouse,
        EXISTS (SELECT 1 FROM "BiCollectorInventoryOrgMapping" m
                WHERE m.collector_id = s.collector_id AND m.inventory_org_id = s.warehouse_id) AS is_crm_mapped
 FROM shipped s
@@ -340,7 +340,7 @@ LEFT JOIN dim_warehouse w ON w.warehouse_id = s.warehouse_id;
 
 COMMENT ON VIEW v_branch_warehouse IS 'Which warehouses each branch actually ships its customers from, and in what share, over the last twelve months of dispatches. Measured rather than configured: CRM''s own branch-to-warehouse table covers only part of the branches, and nearly every branch ships from more than one warehouse. is_crm_mapped says whether CRM''s configuration knows about the pair.';
 COMMENT ON COLUMN v_branch_warehouse.quantity_share IS 'This warehouse''s share of everything the branch dispatched. A branch''s main warehouse typically carries about three quarters.';
-COMMENT ON COLUMN v_branch_warehouse.is_main_warehouse IS 'The warehouse the branch ships the most from.';
+COMMENT ON COLUMN v_branch_warehouse.is_main_warehouse IS 'The warehouse the branch ships the most value from. Value, not quantity: quantities of different items are in different units and cannot be added fairly.';
 COMMENT ON COLUMN v_branch_warehouse.is_crm_mapped IS 'CRM''s own configuration lists this pair. False means the branch ships from a warehouse its configuration does not mention - common, and not an error.';
 
 
@@ -369,8 +369,10 @@ issued AS (
     GROUP BY 1, 2
 ),
 promised AS (
-    -- open orders already promised against this stock
-    SELECT s.inventory_org_id AS warehouse_id, s.item_id, sum(s.balance_qty) AS open_order_qty
+    -- open orders already promised against this stock, and the part of them due by today
+    SELECT s.inventory_org_id AS warehouse_id, s.item_id,
+           sum(s.balance_qty)                          AS open_order_qty,
+           sum(s.balance_qty) FILTER (WHERE s.effective_date::date <= current_date) AS open_order_due_qty
     FROM fact_schedule_line s
     WHERE s.is_open AND s.is_demand AND NOT s.has_pending_cancellation
     GROUP BY 1, 2
@@ -380,6 +382,14 @@ on_order AS (
     SELECT warehouse_id, item_id, sum(pending_qty) AS open_po_qty, min(expected_on) AS next_po_expected_on
     FROM v_open_po
     WHERE NOT is_abandoned
+    GROUP BY 1, 2
+),
+expired AS (
+    -- lots past their shelf life that still sit in a sellable area. whether they are really unusable is a
+    -- quality question (a retest may extend the life), so they stay in sellable stock and are shown beside it
+    SELECT warehouse_id, item_id, sum(quantity) AS sellable_expired_qty
+    FROM fact_stock_lot
+    WHERE is_expired AND is_sellable
     GROUP BY 1, 2
 ),
 pairs AS (
@@ -393,16 +403,20 @@ base AS (
            k.item_id,
            coalesce(p.sellable_qty, 0)                 AS sellable_qty,
            coalesce(o.open_order_qty, 0)               AS open_order_qty,
+           coalesce(o.open_order_due_qty, 0)           AS open_order_due_qty,
            coalesce(p.sellable_qty, 0) - coalesce(o.open_order_qty, 0) AS available_to_promise,
+           coalesce(p.sellable_qty, 0) - coalesce(o.open_order_due_qty, 0) AS available_to_promise_now,
+           coalesce(x.sellable_expired_qty, 0)         AS sellable_expired_qty,
            coalesce(p.in_transit_qty, 0)               AS in_transit_qty,
            coalesce(q.open_po_qty, 0)                  AS open_po_qty,
            q.next_po_expected_on,
            d.avg_daily_demand,
            iss.avg_daily_issue,
-           -- customer demand where the warehouse sells; otherwise how fast stock leaves it at all
-           coalesce(d.avg_daily_demand, iss.avg_daily_issue) AS daily_rate,
-           CASE WHEN d.avg_daily_demand IS NOT NULL THEN 'customer dispatches'
-                WHEN iss.avg_daily_issue IS NOT NULL THEN 'all outflows'
+           -- whichever is faster: customer sales, or everything that leaves. a branch that mostly passes an
+           -- item on to other branches sells slowly but empties fast, and must be judged on the faster rate
+           greatest(d.avg_daily_demand, iss.avg_daily_issue) AS daily_rate,
+           CASE WHEN iss.avg_daily_issue > coalesce(d.avg_daily_demand, 0) THEN 'all outflows'
+                WHEN d.avg_daily_demand IS NOT NULL             THEN 'customer dispatches'
            END                                         AS rate_basis
     FROM pairs k
     LEFT JOIN fact_stock_position p ON p.warehouse_id = k.warehouse_id AND p.item_id = k.item_id
@@ -410,6 +424,7 @@ base AS (
     LEFT JOIN issued iss ON iss.warehouse_id = k.warehouse_id AND iss.item_id = k.item_id
     LEFT JOIN promised o ON o.warehouse_id = k.warehouse_id AND o.item_id = k.item_id
     LEFT JOIN on_order q ON q.warehouse_id = k.warehouse_id AND q.item_id = k.item_id
+    LEFT JOIN expired x  ON x.warehouse_id = k.warehouse_id AND x.item_id = k.item_id
 )
 SELECT b.warehouse_id,
        w.warehouse_name,
@@ -421,7 +436,11 @@ SELECT b.warehouse_id,
        i.business,
        b.sellable_qty,
        b.open_order_qty,
+       b.open_order_due_qty,
        b.available_to_promise,
+       b.available_to_promise_now,
+       b.available_to_promise_now < 0                  AS over_promised_now,
+       b.sellable_expired_qty,
        b.in_transit_qty,
        b.open_po_qty,
        b.next_po_expected_on,
@@ -434,7 +453,8 @@ SELECT b.warehouse_id,
        (b.available_to_promise + b.in_transit_qty + b.open_po_qty) / nullif(b.daily_rate, 0)
                                                        AS cover_days_with_incoming,
        CASE
-           WHEN b.available_to_promise < 0                   THEN 'over-promised'
+           WHEN b.available_to_promise_now < 0               THEN 'over-promised'
+           WHEN b.available_to_promise < 0                   THEN 'over-promised by future orders'
            WHEN b.daily_rate IS NULL                         THEN 'not moving'
            WHEN b.available_to_promise / b.daily_rate < 15   THEN 'under 15 days'
            WHEN b.available_to_promise / b.daily_rate < 45   THEN '15 to 45 days'
@@ -448,11 +468,15 @@ COMMENT ON VIEW v_stock_cover IS 'How many days of sales the stock covers, per w
 COMMENT ON COLUMN v_stock_cover.available_to_promise IS 'Sellable stock minus open customer orders not pending cancellation. Negative means more is promised than is on the shelf.';
 COMMENT ON COLUMN v_stock_cover.avg_daily_demand IS 'Average daily quantity dispatched to customers over the last ninety days. Null where nothing was dispatched.';
 COMMENT ON COLUMN v_stock_cover.avg_daily_issue IS 'Average daily quantity that left the warehouse for any reason over the last ninety days - sales, transfers out, plant consumption. Read from the day-on-day stock change, so a receipt and an issue on the same day partly cancel and this runs a little low.';
-COMMENT ON COLUMN v_stock_cover.daily_rate IS 'The rate cover is measured against: customer dispatches where the warehouse sells, otherwise everything that leaves it. Plants and ports mostly feed other warehouses rather than selling, and judged on customer sales alone their working stock would look idle.';
-COMMENT ON COLUMN v_stock_cover.rate_basis IS 'customer dispatches, or all outflows for a warehouse that moves the item without selling it. Null where nothing has left in ninety days.';
+COMMENT ON COLUMN v_stock_cover.daily_rate IS 'The rate cover is measured against: the faster of customer dispatches and everything that leaves the warehouse. Plants and ports mostly feed other warehouses rather than selling, and many branches pass an item on to other branches - judged on customer sales alone their stock would look far longer-lasting than it is.';
+COMMENT ON COLUMN v_stock_cover.rate_basis IS 'Which rate won: customer dispatches, or all outflows where the item leaves faster than it sells. Null where nothing has left in ninety days.';
+COMMENT ON COLUMN v_stock_cover.open_order_due_qty IS 'The part of the open orders scheduled for today or earlier.';
+COMMENT ON COLUMN v_stock_cover.available_to_promise_now IS 'Sellable stock minus only the orders due by today. Orders scheduled for later can still be met from stock that arrives before then.';
+COMMENT ON COLUMN v_stock_cover.over_promised_now IS 'More is due today than is on the shelf - a real shortage now, not a future scheduling question. Look at these first.';
+COMMENT ON COLUMN v_stock_cover.sellable_expired_qty IS 'Stock in sellable areas whose lots are past their shelf life. It is still counted in sellable_qty, because whether it is really unusable is for quality to say - many lots may pass a retest. Known only for manufactured goods.';
 COMMENT ON COLUMN v_stock_cover.cover_days_available IS 'Days the available-to-promise stock lasts at daily_rate. The headline number.';
 COMMENT ON COLUMN v_stock_cover.cover_days_with_incoming IS 'The same, adding stock in transit to this warehouse and live purchase orders. Does not include stock that will be transferred in from another warehouse, since no transfer is planned until someone raises it.';
-COMMENT ON COLUMN v_stock_cover.cover_status IS 'over-promised (open orders exceed sellable stock), under 15 days, 15 to 45 days, over 45 days, or not moving - nothing has left this warehouse in ninety days, sold or otherwise. Note open orders include future-dated ones, so over-promised can be a scheduling question rather than a shortage.';
+COMMENT ON COLUMN v_stock_cover.cover_status IS 'over-promised (orders due by today exceed sellable stock - a real shortage), over-promised by future orders (only later orders exceed it, so it may be met by stock still to arrive), under 15 days, 15 to 45 days, over 45 days, or not moving - nothing has left this warehouse in ninety days, sold or otherwise.';
 
 
 -- ---------------------------------------------------------------------------------------------------------------
@@ -461,11 +485,16 @@ COMMENT ON COLUMN v_stock_cover.cover_status IS 'over-promised (open orders exce
 DROP VIEW IF EXISTS fact_critical_stock CASCADE;
 
 CREATE VIEW fact_critical_stock AS
-WITH runs AS (
-    SELECT acc_year, jc_type, max(creation_date) AS run_at,
-           rank() OVER (ORDER BY max(creation_date) DESC) AS run_rank
-    FROM "CriticalStocks"
-    GROUP BY acc_year, jc_type
+WITH run_dates AS (
+    SELECT acc_year, jc_type, creation_date::date AS run_date, count(*) AS n
+    FROM "CriticalStocks" GROUP BY 1, 2, 3
+),
+runs AS (
+    -- a run is dated by the day that wrote most of its rows: stray rows added weeks later (one on JC6
+    -- 2026-27, a month after the run) must not redate it
+    SELECT acc_year, jc_type, run_date AS run_at, rank() OVER (ORDER BY run_date DESC) AS run_rank
+    FROM (SELECT DISTINCT ON (acc_year, jc_type) acc_year, jc_type, run_date
+          FROM run_dates ORDER BY acc_year, jc_type, n DESC, run_date) x
 )
 SELECT c.header_id                                     AS critical_stock_id,
        c.acc_year,

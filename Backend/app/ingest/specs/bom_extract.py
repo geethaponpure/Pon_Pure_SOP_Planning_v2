@@ -12,7 +12,8 @@ BOM_EXTRACT = FileSpec(
     header_row=1,
     mode="replace",
     raw_table="raw_bom_extract",
-    model_sql=("08_ingest_models.sql",),          # views over this table; plain views, nothing to refresh
+    model_sql=("08_ingest_models.sql", "09_inventory_master.sql"),   # 09: fact_stock_lot.expires_on reads this,
+                                                  # so its matviews refresh on upload, not at the next etl
     strict_headers=True,                          # a system extract: a missing column is a wrong export, not n/a
     dedupe_exact=True,                            # 3 identical lines in the extract: the query groups by
                                                   # substitute_component_id, which is not in the output

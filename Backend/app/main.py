@@ -46,6 +46,15 @@ async def lifespan(app:FastAPI):
 
         await create_views(conn)
 
+        # uploads run as background tasks inside this process. at start nothing can be running, so an
+        # upload still in progress was cut off by a restart: mark it failed so the ui stops polling.
+        # nothing of it was loaded (the load commits at the end) and the file can be uploaded again.
+        await conn.execute(text("""
+            UPDATE ingest_files
+            SET status = 'failed',
+                error = 'interrupted: the server restarted during the upload. Upload the file again.'
+            WHERE status IN ('received', 'validating', 'loading', 'modeling')"""))
+
     # the downloadable excel templates, created from the specs when missing (existing ones are kept)
     write_templates()
 
