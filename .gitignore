@@ -14,3 +14,6 @@ wheels/
 
 # Uploaded Excel files (saved by the upload API)
 Backend/uploads/
+
+# Frontend dependencies
+node_modules/
