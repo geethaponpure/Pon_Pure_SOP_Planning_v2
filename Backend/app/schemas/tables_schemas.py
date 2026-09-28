@@ -832,6 +832,7 @@ TABLES_COLUMNS = {
 
     "LeadDetails": [              # the leads (crm's LMS), one row per lead. snapshot, level 3
         "lead_id",                # pk
+        "created_by",             # -> Users: who raised the lead. names who works a placeholder's circle. 3,444 rows name a removed user -> null
         "lead_no",                # LEAD-xxx
         "company",                # -> CustomerMasters.header_id: the customer or lead row. crm's customer_id column is 0 on unconverted leads, not loaded
         "collector",              # the branch NAME, resolved to collector_id (derived) on stage. 2% name a branch crm no longer has

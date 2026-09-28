@@ -755,3 +755,8 @@ Things to know:
 Snapshot = wiped and reloaded in full every run (rows change after creation in crm). Incremental = `pk > last loaded pk`, rows never change. Upsert = masters: read in full every run and merged on the pk, never truncated (children point at them), so a lead that becomes a customer or a site that moves circle is picked up.
 Parents load before children (levels). If a child arrives before its parent (crm moved on during the run), incremental tables hold the row back until the next run; snapshot tables blank the fk and the next full reload fixes it.
 Large = an incremental table too big for one read (`LARGE_TABLES`): the pk span is split into ranges of `RANGE_ROWS` ids, `INNER_WORKERS` processes each read one range with its own crm connection and commit it on its own. The watermark moves only over contiguous good ranges, so a failed range is re-fetched next run and rows loaded above it are absorbed by `ON CONFLICT DO NOTHING` - no gaps, no duplicates.
+
+- **`LeadDetails.created_by`** (added Sep 2026) → `Users`: who raised the lead. It is the best evidence of who works a placeholder's circle. Leads naming a user CRM has since removed load with it blank.
+- **`CustomerSites.mc_code_raw`** is not a CRM column: the loader keeps CRM's circle code here before rewriting it. Both an empty code and a code with no circle become `unknown` in `mc_code`; only `mc_code_raw` tells them apart.
+- **`placeholder_operator`** is the tool's own table (placeholder login → the real person operating it), filled by the admin, never by the loader.
+- **`placeholder_decision`** is the tool's own table: a recorded ruling (person or placeholder) on one account. It overrides both CRM's dummy flag and the name rule, and is the only way to correct either.

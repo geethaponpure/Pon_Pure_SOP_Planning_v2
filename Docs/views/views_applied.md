@@ -1659,7 +1659,16 @@ The tool controls access through its own admin-managed grants: **page permission
 ### Who people are - dim_role, dim_user, v_user_hierarchy, v_branch_management
 
 - `dim_role` reads each role's rule from CRM's own configuration (`RoleConfigs`), not from a list we keep.
-- **dummy users are placeholder managers.** CRM puts them in the reporting line and walks through them; so does `v_user_hierarchy`. They are kept and flagged, never granted anything.
+- **placeholder logins.** CRM gives a market circle with no sales executive a placeholder account, and the technical executive covering the area logs in through it. CRM records no link between the two, and its own dummy flag is unreliable both ways: it misses dozens of accounts named DUMMY, and it is set on some real people who moved into another role and kept their old sales login. So `dim_user` decides for itself:
+
+| `placeholder_status` | meaning | scope |
+| --- | --- | --- |
+| **placeholder** | an account code, never a person - named DUMMY, or flagged by CRM and named like a code | **never** gets scope or permissions; its circles go to whoever operates it |
+| **confirm** | flagged by CRM, but carries a person's name | **keeps** its scope, and goes on the admin's worksheet to be checked |
+
+- **a recorded decision beats the rule.** When the admin or the CRM team knows an account's true nature, it goes into `placeholder_decision` (person or placeholder, who decided, when, why), and `dim_user` follows it; `placeholder_source` shows `decision` for those accounts. The first four came from the CRM team: four flagged accounts that are real sales executives. Withdrawing a decision closes its row rather than deleting it.
+- the rule leans the safe way on purpose. Wrongly calling a real person a placeholder would strip their access silently; wrongly calling a placeholder "confirm" keeps its access but puts it in front of the admin. It is not widened to every login starting "DUM" - some of those are real people.
+- placeholders stay in the reporting line: `v_user_hierarchy` walks through them, and the branch manager above one still covers its circle.
 - `has_manager_issue` flags active people with no manager or an inactive one. It is a data-quality flag, not a blocker: most of them are warehouse, lab and back-office staff whose scope never uses the reporting line.
 - `v_branch_management` lists who each branch's table names as branch manager, regional manager, commercial manager, branch controller, executive director, general manager and coordinators.
 
@@ -1669,8 +1678,32 @@ The tool controls access through its own admin-managed grants: **page permission
 - **a manager covers every report's circles, placeholders included.** CRM parks a vacant territory on a placeholder sales executive, and the branch manager above that placeholder still covers it. Skip placeholders and every vacant territory silently falls out of scope.
 - a branch or regional manager with no active reports falls back to the branches that name them on the branch table.
 - a technical executive's customers are matched by the customer's header id, current rows only.
-- `v_customer_ownership` keeps unowned customers visible, and says why: owned, vacant territory, held by another role, held by someone who has left, circle held by no one, or no circle at all. Nearly all are reachable by someone's scope; the few that are not can only be reached by roles that see everything - the set an admin will want to assign.
-- `v_user_customer_scope` explodes branch-list users to one row per customer, which makes it large. Seed their grants at **branch** level, not customer level.
+- `v_customer_ownership` keeps unowned customers visible, and says why:
+
+| status | meaning |
+| --- | --- |
+| owned | a real, active sales executive holds the circle |
+| no sales executive, placeholder used by technical staff | the circle sits on a placeholder login; the branch manager above it still covers it |
+| held by another role | an export manager, for example |
+| held by someone who has left | |
+| circle held by no one | |
+| no circle on the bill-to site | CRM's code is empty, or names a circle CRM does not have (GROUP, TPU01, the typo CHRO1 ..) - `circle_code_issue` says which, for the CRM team to fix |
+| no active bill-to site | |
+
+- `owner_needs_confirmation` marks customers whose only sales executive is a "confirm" account - counted as owned, pending the admin.
+- `v_user_customer_scope` explodes branch-list users to one row per customer, which makes it large. Seed their grants at **branch** level, not customer level. Scan it once or copy it to a temporary table for checks - read inside a per-row subquery it runs for many minutes.
+
+### The placeholder worksheet - v_placeholder_circle
+
+| | |
+| --- | --- |
+| one row per | placeholder or confirm account × the circle it holds |
+| answers | who should operate this login |
+
+- the evidence for each: the manager above it, the branch manager, the technical executive whose own customers overlap the circle most (with the percentage), the people who raise the most leads there, and - for a confirm account - an active account with exactly the same name, usually the same person in a new role.
+- `suggested_operator_id` and `suggestion_basis` give the strongest candidate in words. A suggestion only: nothing is assigned automatically.
+- `has_no_manager_above` flags a placeholder with no manager, whose customers nobody covers through the reporting line until an operator is assigned.
+- the admin records the decision in **`placeholder_operator`** - the first table the tool owns. The operator then receives the circle's customers, with `via = 'placeholder they operate'`. Ending an assignment closes the row instead of deleting it, so the history stays readable.
 
 ### Which rows - supply and approvals
 
@@ -1680,7 +1713,9 @@ The tool controls access through its own admin-managed grants: **page permission
 ### Which screens - v_user_capability
 
 - every permission a user holds or was refused, with `granted_by`: role, individual grant, or role excluded for this user.
-- `is_planning_permission` marks the business-plan, yearly-plan and planner-approval permissions that decide who may approve a plan.
+- `is_planning_permission` marks the business-plan, yearly-plan and planner-approval permissions. **These are not an approver list**: "Manage PC Business Plan BM" is carried by every sales and technical role and lets them edit the plan. Who approves a plan comes from `v_segment_head` and the reporting line.
+- `user_is_active` and `user_is_placeholder` are on every row. Thousands of granted rows belong to people who have left or to placeholders - filter both out before seeding page permissions.
+- "Manage PC Business Plan BH" also reaches the Digital Marketing Co-ordinator role and a role named Dummy - kept as CRM has it, and a question for the CRM team.
 
 **Quick checks** (pgAdmin, after `SET search_path TO ponpure_planner;`)
 

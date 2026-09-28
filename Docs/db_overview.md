@@ -111,6 +111,8 @@ Stock on hand, the warehouses, and which products belong in which warehouse.
 - **UserInventoryOrgMappings** - the warehouses each person works with.
 - **HolidayUserCollectorMappings** - despite the name, the branches each technical person covers.
 - **SpAlertSegmentWorkflowHdrs / Dtls** - who heads each division, and who approves each segment and branch.
+- **placeholder_operator** - ours, not CRM's: which real person uses each placeholder login. The admin fills it in.
+- **placeholder_decision** - ours, not CRM's: a person's ruling that an account is really a person, or really a placeholder, overriding the automatic check.
 - **ItemInventoryOrgMappings** - which products may be stocked in which warehouse.
 - **BiCollectorInventoryOrgMapping** - which warehouse serves which branch.
 

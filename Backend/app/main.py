@@ -16,6 +16,7 @@ from .models.purchase_master import (ApprovalStatus, ApTermsTls, ApSuppliers, Ap
                                      BiPoDetails, BiGrnDetails, PurchaseRequisitionHdrs, PurchaseRequisitionDtls)
 from .models.inventory_master import (BiStockDetail, InventoryOrgs, ItemInventoryOrgMappings, BiCollectorInventoryOrgMapping,
                                       LotSubinventoryRestriction, CriticalStockConfigs, CriticalStocks)
+from .models.access_control import PlaceholderOperator, PlaceholderDecision
 from .models.user_and_scope import (Users, Roles, UserRoles, UserMarketCircleMappings, UserCollectorMappings,
                                     UserCustomerMappings, CollectorMailMappings, TechnicalUserSegmentMappings,
                                     RoleTypes, RoleConfigs, RoleHierarchies, Claims, RoleClaims, UserClaims,

@@ -47,6 +47,7 @@ DERIVED_COLUMNS = {
     "SCLeadTargets": ["temp_item_id"], # from item_id when is_temp_item, see STAGE_FIXES
     "LeadDetails":   ["collector_id"], # from the branch name, see STAGE_FIXES
     "LeadProducts":  ["item_id"],      # from productid when it is a real item id, see STAGE_FIXES
+    "CustomerSites": ["mc_code_raw"],  # the circle code as crm holds it, kept before the rewrite below
 }
 
 
@@ -211,6 +212,9 @@ STAGE_FIXES = {
     ],
 
     "CustomerSites": [
+        # keep crm's own code before it is cleaned: an empty code and a code with no circle both become
+        # 'unknown' below, and only this tells them apart (and names the codes to send back to crm)
+        "UPDATE stage SET mc_code_raw = nullif(trim(mc_code), '')",
         'UPDATE stage SET mc_code = lower(trim(mc_code))',
         '''UPDATE stage SET mc_code = 'unknown'
             WHERE mc_code IS NULL OR mc_code = ''
@@ -301,6 +305,8 @@ STAGE_FIXES = {
             WHERE company IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "CustomerMasters" c WHERE c.header_id = stage.company)''',
         '''UPDATE stage SET assignleadchk = NULL
             WHERE assignleadchk IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.assignleadchk)''',
+        '''UPDATE stage SET created_by = NULL
+            WHERE created_by IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "Users" u WHERE u.line_id = stage.created_by)''',
         '''UPDATE stage SET bill_to_site_use_id = NULL
             WHERE bill_to_site_use_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "CustomerSites" s WHERE s.site_use_id = stage.bill_to_site_use_id)''',
         '''UPDATE stage SET close_reason_id = NULL

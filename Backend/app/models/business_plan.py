@@ -564,11 +564,13 @@ class LeadDetails(Base):
     close_reason_id = Column(BigInteger, ForeignKey("Reasons.header_id"))    # why it was closed. 0 -> null
     approval_date = Column(DateTime)
     uploaded_date = Column(DateTime)
+    created_by = Column(BigInteger, ForeignKey("Users.line_id"), index=True)   # who raised the lead. blank where crm names a user it no longer has
     creation_date = Column(DateTime)
     last_update_date = Column(DateTime)
 
     customer = relationship("CustomerMasters")
     branch = relationship("Collectors")                                      # not "collector": that is the name column
+    creator = relationship("Users", foreign_keys=[created_by])               # not "created_by": that is the column
     products = relationship("LeadProducts", back_populates="lead")
     plans = relationship("SCLeadTargets", back_populates="lead")
 

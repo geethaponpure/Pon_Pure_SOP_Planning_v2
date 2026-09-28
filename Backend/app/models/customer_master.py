@@ -67,6 +67,7 @@ class CustomerSites(Base):
     line_id = Column(BigInteger, primary_key=True, autoincrement=False)
     header_id = Column(BigInteger, ForeignKey("CustomerMasters.header_id"), nullable=False, index=True)
     mc_code = Column(Text, ForeignKey("MarketCircles.mc_code"), index=True)    # etl sets 'unknown' when no match
+    mc_code_raw = Column(Text)                                                 # not in crm: the code exactly as crm holds it, kept before the etl rewrites it. null = crm had none; set but mc_code 'unknown' = a code with no circle (GROUP, TPU01, the typo CHRO1 ..)
     collector_id = Column(BigInteger, ForeignKey("Collectors.collector_id"), index=True)   # the site's own branch, set on bill-to sites, null on ship-to. crm's customer -> branch rule uses this, not the circle's branch. 13085 = OBSOLETE, a parking branch for retired sites
     cust_acct_site_id = Column(BigInteger, nullable=False, index=True)          # SaleOrderHdrs.CUST_ACCT_SITE_ID
     status = Column(Text)                                                      
