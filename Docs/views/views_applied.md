@@ -1,6 +1,6 @@
 # Views applied
 
-The views that are built and live. One section per cluster. `views.md` keeps the to-do list.
+The views that are built and live. One section per cluster.
 
 ## How views work
 
@@ -24,6 +24,15 @@ The views that are built and live. One section per cluster. `views.md` keeps the
 | names | `dim_*` one row per thing · `fact_*` events and measures · `v_*` helpers |
 | comments | every view and column has a `COMMENT ON` in plain language - hover a column in pgAdmin, or the ai agent reads it from the catalog |
 | pgAdmin | `SET search_path TO ponpure_planner;` once, then view names need no quotes |
+
+### Rules for every view
+
+- **raw tables are a mirror.** The load keeps CRM as it is, plus only what the foreign keys need (`-1` / `unknown` rows, `0` → empty, junk dates → empty). Which rows count and what a number means is decided in the views.
+- **two branches on an order.** An order's booking branch (`collector_id`) differs from the ship-to site's branch on about one order in ten. Both are right - a report must say which one it uses.
+- **`-1` / `unknown` rows** exist in MarketCircles, CustomerMasters, CustomerSites, DeliveryFroms and JourneyCalendars (not in Collectors or ItemMasters - there a missing parent is empty). Every dim view shows them as an "unknown" bucket unless a report filters them out.
+- **Performance Chemicals only, in part.** Quotes, dispatches, schedules, cancellations, purchase orders and requisitions are PC only; orders, customers and items are not. A view joining across must not assume a match exists.
+- **snapshot race.** A few rows in a reloaded child table can carry an empty parent link (the parent was created between the two reads). They still join through other keys, and the next load heals them.
+- **item codes are not unique** (a handful appear twice in ItemMasters). Any join on code removes the duplicates on the master side first.
 
 ---
 
